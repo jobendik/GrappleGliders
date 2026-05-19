@@ -94,11 +94,11 @@ export class CrazyGamesPlatform {
 
   cloudAdapter(): CrazyAdapter | null {
     if (!this.sdk || !this.sdk.data.getItem || !this.sdk.data.setItem) return null;
-    const getItem = this.sdk.data.getItem;
-    const setItem = this.sdk.data.setItem;
+    // Capture the data object so the SDK methods are called with the correct `this` context.
+    const data = this.sdk.data;
     return {
-      cloudGet: (key) => getItem(key),
-      cloudSet: (key, value) => setItem(key, value),
+      cloudGet: (key) => data.getItem!(key),
+      cloudSet: (key, value) => data.setItem!(key, value),
     };
   }
 }

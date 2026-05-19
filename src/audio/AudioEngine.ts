@@ -48,7 +48,7 @@ export class AudioEngine {
     if (bus === 'master') this.enabled = enabled;
     if (bus === 'music') this.musicEnabled = enabled;
     if (bus === 'sfx') this.sfxEnabled = enabled;
-    if (this.master) this.master.gain.value = enabled && this.enabled ? 0.65 : 0;
+    if (this.master) this.master.gain.value = this.enabled ? 0.65 : 0;
     if (this.musicBus) this.musicBus.gain.value = this.musicEnabled ? 0.5 : 0;
     if (this.sfxBus) this.sfxBus.gain.value = this.sfxEnabled ? 0.9 : 0;
   }
