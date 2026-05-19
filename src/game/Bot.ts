@@ -197,7 +197,11 @@ export class Bot {
     const lavaPressure = killY - this.player.pos.y;
     const lavaClose = lavaPressure < 320;
     const stuck = this.stuckFrames > 180;
-    const fallingIdle = this.player.hook.state === 'idle' && this.player.vel.y > 1.5;
+    // Only consider a "falling idle" dash worthwhile when we have a target to aim at.
+    // Dashing straight up into empty space (no obstacles in world) is wasteful and breaks
+    // the "graceful no-op when there's nothing to grapple to" contract.
+    const fallingIdle =
+      this.player.hook.state === 'idle' && this.player.vel.y > 1.5 && this.currentTarget !== null;
     if (!lavaClose && !stuck && !fallingIdle) return;
     // Aggression × skill gates dash probability per tick.
     const chance = this.personality.aggression * (lavaClose ? 0.08 : 0.03) * (0.5 + this.personality.skill * 0.5);
