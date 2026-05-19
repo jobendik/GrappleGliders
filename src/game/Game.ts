@@ -221,13 +221,21 @@ export class Game {
     if (this.save.data.level >= 10) this.achievements.setProgress('level-10', this.save.data.level, this.notifyUnlock);
     if (this.save.data.level >= 20) this.achievements.setProgress('level-20', this.save.data.level, this.notifyUnlock);
 
-    void this.bootPlatform();
+    this.bootPlatform();
   }
 
-  private async bootPlatform(): Promise<void> {
-    await this.crazy.init();
-    const adapter = this.crazy.cloudAdapter();
-    if (adapter) {
+  private bootPlatform(): void {
+    // Open the menu and start the render loop immediately. The CrazyGames SDK
+    // can take 10s to settle into its "disabled" state when this is not the
+    // CG portal — we don't want anything on the boot path waiting on it.
+    this.openMainMenu();
+    this.startLoop();
+
+    void (async () => {
+      await this.crazy.init();
+      if (!this.crazy.available) return;
+      const adapter = this.crazy.cloudAdapter();
+      if (!adapter) return;
       this.save.attachCloud(
         {
           getItem: (k) => adapter.cloudGet(k),
@@ -235,9 +243,7 @@ export class Game {
         },
         () => this.toast.show('Cloud save synced.'),
       );
-    }
-    this.openMainMenu();
-    this.startLoop();
+    })();
   }
 
   private startLoop(): void {

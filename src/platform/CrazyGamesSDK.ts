@@ -1,6 +1,8 @@
 import type { CrazyGamesSDK as SDK } from '../types/global';
 
 const SDK_URL = 'https://sdk.crazygames.com/crazygames-sdk-v3.js';
+const SDK_LOAD_TIMEOUT_MS = 3000;
+const SDK_INIT_TIMEOUT_MS = 2500;
 
 export type AdType = 'midgame' | 'rewarded';
 
@@ -22,12 +24,29 @@ export class CrazyGamesPlatform {
       await this.loadScript();
       const sdk = window.CrazyGames?.SDK;
       if (!sdk) return;
-      await sdk.init();
+      // Race init against a timeout — on non-CrazyGames domains the SDK can
+      // spend ~10s waiting on a parent frame handshake before resolving as
+      // "disabled". We don't want that on the boot path.
+      await Promise.race([
+        sdk.init(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('SDK init timeout')), SDK_INIT_TIMEOUT_MS),
+        ),
+      ]);
+      // Probe a getter to detect the "disabled" environment, in which the SDK
+      // exposes `game` / `data` / `ad` as throwing getters. If the probe
+      // throws, leave `sdk` null so every wrapper call no-ops cleanly.
+      try {
+        void sdk.game;
+        void sdk.data;
+      } catch {
+        return;
+      }
       this.sdk = sdk;
       this.available = true;
-      sdk.game.loadingStop?.();
+      this.safeCall(() => sdk.game.loadingStop?.());
     } catch {
-      // SDK unavailable (e.g. running on GitHub Pages or offline)
+      // SDK unavailable (CDN blocked, init timed out, or environment disabled).
       this.available = false;
     }
   }
@@ -46,19 +65,31 @@ export class CrazyGamesPlatform {
       s.dataset.cgSdk = '1';
       s.onload = () => resolve();
       s.onerror = () => reject(new Error('SDK load error'));
-      // Time out after 3 seconds if the CDN is blocked.
-      const timeout = setTimeout(() => reject(new Error('SDK timeout')), 3000);
+      const timeout = setTimeout(() => reject(new Error('SDK timeout')), SDK_LOAD_TIMEOUT_MS);
       s.addEventListener('load', () => clearTimeout(timeout), { once: true });
       document.head.appendChild(s);
     });
   }
 
+  private safeCall(fn: () => void): void {
+    try {
+      fn();
+    } catch {
+      // Disabled SDK throws synchronously from `game`/`data`/`ad` getters.
+      // Mark unavailable so we stop hitting it.
+      this.sdk = null;
+      this.available = false;
+    }
+  }
+
   gameplayStart(): void {
-    this.sdk?.game.gameplayStart?.();
+    if (!this.sdk) return;
+    this.safeCall(() => this.sdk!.game.gameplayStart?.());
   }
 
   gameplayStop(): void {
-    this.sdk?.game.gameplayStop?.();
+    if (!this.sdk) return;
+    this.safeCall(() => this.sdk!.game.gameplayStop?.());
   }
 
   requestAd(
@@ -87,18 +118,45 @@ export class CrazyGamesPlatform {
           adError: () => resolve({ rewarded: false, played: false }),
         });
       } catch {
+        // Disabled environment throws on `sdk.ad` access — disable for future calls.
+        this.sdk = null;
+        this.available = false;
         resolve({ rewarded: false, played: false });
       }
     });
   }
 
   cloudAdapter(): CrazyAdapter | null {
-    if (!this.sdk || !this.sdk.data.getItem || !this.sdk.data.setItem) return null;
-    // Capture the data object so the SDK methods are called with the correct `this` context.
-    const data = this.sdk.data;
+    if (!this.sdk) return null;
+    let data: SDK['data'];
+    try {
+      data = this.sdk.data;
+      if (!data.getItem || !data.setItem) return null;
+    } catch {
+      this.sdk = null;
+      this.available = false;
+      return null;
+    }
+    const platform = this;
     return {
-      cloudGet: (key) => data.getItem!(key),
-      cloudSet: (key, value) => data.setItem!(key, value),
+      cloudGet(key) {
+        try {
+          return data.getItem!(key);
+        } catch (err) {
+          platform.sdk = null;
+          platform.available = false;
+          return Promise.reject(err);
+        }
+      },
+      cloudSet(key, value) {
+        try {
+          return data.setItem!(key, value);
+        } catch (err) {
+          platform.sdk = null;
+          platform.available = false;
+          return Promise.reject(err);
+        }
+      },
     };
   }
 }
