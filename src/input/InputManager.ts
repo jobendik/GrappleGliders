@@ -73,7 +73,11 @@ export class InputManager {
       }
       this.pointer.set(e.clientX, e.clientY);
       this.setPointerDown(true);
-      this.fireUnlock();
+      // Defer audio initialisation to a microtask so the event handler returns
+      // quickly (avoids the "[Violation] handler took Xms" warning).
+      // Promise microtasks still run within the browser's user-activation window,
+      // so iOS audio-unlock continues to work correctly.
+      Promise.resolve().then(() => this.fireUnlock());
     });
     window.addEventListener('mouseup', (e) => {
       if (e.button === 2) return;
