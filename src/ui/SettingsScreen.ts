@@ -2,7 +2,6 @@ import type { SaveSystem, SaveSettings } from '../systems/SaveSystem';
 import type { ToastManager } from './Toast';
 import type { AudioEngine } from '../audio/AudioEngine';
 import type { Music } from '../audio/Music';
-import { installPWA, uninstallPWA } from '../platform/PWA';
 
 export interface SettingsCallbacks {
   onClose(): void;
@@ -37,7 +36,6 @@ export class SettingsScreen {
           <button class="ghost" data-el="export">Export Save</button>
           <button class="ghost" data-el="import">Import Save</button>
           <button class="ghost" data-el="reset">Reset Tutorial</button>
-          <button class="ghost" data-el="pwa">Install PWA</button>
           <button class="ghost" data-el="back">Back</button>
         </div>
         <p class="subtitle" style="font-size:11px;margin-top:18px;color:rgba(234,255,255,0.45)">v1.0.0 · Built with TypeScript + Vite · Canvas 2D · No tracking</p>
@@ -120,11 +118,6 @@ export class SettingsScreen {
         reader.readAsText(file);
       });
       input.click();
-    });
-    modal.querySelector('[data-el="pwa"]')!.addEventListener('click', async () => {
-      const installed = await installPWA();
-      toast.show(installed ? 'PWA installed.' : 'Install failed — try again from settings.');
-      if (!installed) await uninstallPWA();
     });
   }
 

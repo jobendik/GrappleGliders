@@ -1,4 +1,11 @@
 import { Game } from './game/Game';
+// Self-hosted fonts — no third-party requests inside the CrazyGames iframe.
+import '@fontsource/orbitron/latin-500.css';
+import '@fontsource/orbitron/latin-700.css';
+import '@fontsource/orbitron/latin-900.css';
+import '@fontsource/rajdhani/latin-500.css';
+import '@fontsource/rajdhani/latin-600.css';
+import '@fontsource/rajdhani/latin-700.css';
 import './styles/main.css';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement | null;

@@ -11,10 +11,13 @@ export interface CrazyAdapter {
   cloudSet(key: string, value: string): Promise<void>;
 }
 
+const HAPPYTIME_COOLDOWN_MS = 60_000;
+
 export class CrazyGamesPlatform {
   private sdk: SDK | null = null;
   private loadAttempted = false;
   private lastAdTime = 0;
+  private lastHappytime = 0;
   available = false;
 
   async init(): Promise<void> {
@@ -53,9 +56,27 @@ export class CrazyGamesPlatform {
 
   private loadScript(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const existing = document.querySelector(`script[data-cg-sdk]`);
+      // Already loaded by the static <script> tag in index.html?
+      if (window.CrazyGames?.SDK) {
+        resolve();
+        return;
+      }
+      const existing =
+        document.querySelector<HTMLScriptElement>(`script[src="${SDK_URL}"]`) ??
+        document.querySelector<HTMLScriptElement>('script[data-cg-sdk]');
       if (existing) {
-        existing.addEventListener('load', () => resolve(), { once: true });
+        if (existing.dataset.cgLoaded === '1') {
+          resolve();
+          return;
+        }
+        existing.addEventListener(
+          'load',
+          () => {
+            existing.dataset.cgLoaded = '1';
+            resolve();
+          },
+          { once: true },
+        );
         existing.addEventListener('error', () => reject(new Error('SDK failed')), { once: true });
         return;
       }
@@ -90,6 +111,15 @@ export class CrazyGamesPlatform {
   gameplayStop(): void {
     if (!this.sdk) return;
     this.safeCall(() => this.sdk!.game.gameplayStop?.());
+  }
+
+  /** Signal a "delightful moment" — boosts placement in CrazyGames' recommendation algo. */
+  happytime(): void {
+    if (!this.sdk) return;
+    const now = performance.now();
+    if (now - this.lastHappytime < HAPPYTIME_COOLDOWN_MS) return;
+    this.lastHappytime = now;
+    this.safeCall(() => this.sdk!.game.happytime?.());
   }
 
   requestAd(
@@ -137,23 +167,24 @@ export class CrazyGamesPlatform {
       this.available = false;
       return null;
     }
-    const platform = this;
+    const disable = (): void => {
+      this.sdk = null;
+      this.available = false;
+    };
     return {
-      cloudGet(key) {
+      cloudGet: (key) => {
         try {
           return data.getItem!(key);
         } catch (err) {
-          platform.sdk = null;
-          platform.available = false;
+          disable();
           return Promise.reject(err);
         }
       },
-      cloudSet(key, value) {
+      cloudSet: (key, value) => {
         try {
           return data.setItem!(key, value);
         } catch (err) {
-          platform.sdk = null;
-          platform.available = false;
+          disable();
           return Promise.reject(err);
         }
       },

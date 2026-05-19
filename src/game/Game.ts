@@ -165,6 +165,8 @@ export class Game {
   private nextMilestone = 100;
   /** Frames remaining of "slow lava" effect from the slow-pickup. */
   private slowLavaFrames = 0;
+  /** Have we shown the preroll midgame ad yet this session? */
+  private prerollShown = false;
 
   constructor(opts: {
     canvas: HTMLCanvasElement;
@@ -512,6 +514,7 @@ export class Game {
     this.toast.show(`Achievement: ${e.def.name} (+${e.def.reward} Sparks)`);
     this.haptics.trigger('unlock');
     this.sfx.unlock();
+    this.crazy.happytime();
   };
 
   /* ---------- Render ---------- */
@@ -992,6 +995,17 @@ export class Game {
   }
 
   private startMode(mode: GameMode): void {
+    // Show a preroll midgame ad once per session before the very first run,
+    // then re-enter startMode after it resolves.
+    if (!this.prerollShown && this.crazy.available) {
+      this.prerollShown = true;
+      this.mainMenu.close();
+      this.dailyScreen.close();
+      this.gameOver.close();
+      void this.crazy.requestAd('midgame', 240).finally(() => this.startMode(mode));
+      return;
+    }
+    this.prerollShown = true;
     this.mode = mode;
     this.mainMenu.close();
     this.dailyScreen.close();
@@ -1306,7 +1320,10 @@ export class Game {
       this.save.data.timeAttackMedals[this.mode] = medal;
       if (medal === 'bronze') this.achievements.unlock('ta-bronze', this.notifyUnlock);
       if (medal === 'silver') this.achievements.unlock('ta-silver', this.notifyUnlock);
-      if (medal === 'gold') this.achievements.unlock('ta-gold', this.notifyUnlock);
+      if (medal === 'gold') {
+        this.achievements.unlock('ta-gold', this.notifyUnlock);
+        this.crazy.happytime();
+      }
     }
     this.endRun(`Cleared in ${time.toFixed(2)} s (${medal.toUpperCase()})`);
   }
@@ -1333,6 +1350,12 @@ export class Game {
     const newBestScore = score > prevBestScore;
     if (newBestScore) this.save.data.bestScore[this.mode] = score;
     const newBestTime = this.mode === GameMode.TimeAttack && !this.player.dead;
+
+    // Signal a "happy moment" to CrazyGames on a meaningful personal best
+    // (prev > 0 filters out first-run noise; the platform rate-limits to once/min).
+    if ((newBestAltitude && prevBestAlt > 0) || (newBestScore && prevBestScore > 0)) {
+      this.crazy.happytime();
+    }
 
     // Save ghost on PB in endless/daily
     if (

@@ -4,8 +4,6 @@ A neon synthwave grappling-hook climber. Swing, dash, and outrun the rising lava
 
 > **Play now:** [jobendik.github.io/GrappleGliders](https://jobendik.github.io/GrappleGliders/)
 
-![Demo placeholder](docs/demo.gif)
-
 Built as a single-page TypeScript + Vite + Canvas 2D experience. No frameworks, no engines — direct DOM and a hand-tuned spring rope. Five game modes, twelve skins, eight hooks, twelve trails, six themes, thirty-plus achievements, daily challenges with deterministic seeding, ghost replays, bot races, time attack, and a 60-second combo sprint.
 
 ## Quick controls

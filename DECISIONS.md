@@ -54,6 +54,6 @@ If the CrazyGames SDK is available, a revive is gated on a rewarded ad. If it is
 
 ESLint 9 removed `.eslintrc.json` support. The project uses `eslint.config.js` (flat config) wired through `@eslint/js`, `@typescript-eslint`, and `eslint-config-prettier`. This was a forced upgrade — the prompt asked for ESLint without pinning a major version.
 
-## 14. PWA install is opt-in
+## 14. No PWA / service worker
 
-Auto-registering a service worker would break CrazyGames-style hosting where the game runs inside an iframe. The "Install PWA" button in Settings registers it on demand, matching the prompt's "PWA opt-in via settings" requirement.
+Earlier revisions wired up an opt-in "Install PWA" button in Settings, but the service-worker file was never shipped and the registration always failed. CrazyGames also forbids service workers inside their iframe host, which is the primary deploy target. The button and `src/platform/PWA.ts` were removed; if a PWA is ever needed for a self-hosted variant, ship a real `public/sw.js` and re-register from outside the CrazyGames iframe (`window.top === window.self`).
