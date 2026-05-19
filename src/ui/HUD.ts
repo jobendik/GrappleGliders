@@ -19,6 +19,8 @@ export interface HUDContext {
   raceStatus?: string;
 }
 
+const DASH_DOT_COUNT = PHYSICS.maxDashCharges;
+
 export class HUD {
   private root: HTMLElement;
   private el: {
@@ -27,15 +29,20 @@ export class HUD {
     altitudeBest: HTMLDivElement;
     score: HTMLDivElement;
     scoreBest: HTMLDivElement;
-    dashText: HTMLSpanElement;
-    dashBar: HTMLElement;
+    dashDots: HTMLDivElement;
+    dashFill: HTMLElement;
     centerLabel: HTMLDivElement;
     centerValue: HTMLDivElement;
-    centerBar: HTMLDivElement;
     centerBarFill: HTMLElement;
     centerStatus: HTMLDivElement;
     combo: HTMLDivElement;
   };
+  /** Smoothed counter values so digits roll up instead of snapping. */
+  private displayedAltitude = 0;
+  private displayedScore = 0;
+  private lastCombo = 1;
+  private lastDashCharges = -1;
+  private comboPulseTimer = 0;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -57,8 +64,11 @@ export class HUD {
         <span class="label">Score</span>
         <div class="big-stat" data-el="score">0</div>
         <div class="row"><span>Best</span><strong data-el="scoreBest">0</strong></div>
-        <div class="row"><span>Dash</span><strong data-el="dashText">2 / 2</strong></div>
-        <div class="bar"><i data-el="dashBar"></i></div>
+        <div class="row" style="margin-top:8px">
+          <span>Dash</span>
+          <div class="dash-dots" data-el="dashDots"></div>
+        </div>
+        <div class="bar" style="margin-top:4px"><i data-el="dashFill"></i></div>
       </div>
     `;
     this.root.appendChild(container);
@@ -68,17 +78,23 @@ export class HUD {
     combo.textContent = '×1';
     document.body.appendChild(combo);
 
+    const dashDots = container.querySelector<HTMLDivElement>('[data-el="dashDots"]')!;
+    for (let i = 0; i < DASH_DOT_COUNT; i++) {
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dashDots.appendChild(dot);
+    }
+
     this.el = {
       container,
       altitude: container.querySelector('[data-el="altitude"]')!,
       altitudeBest: container.querySelector('[data-el="altitudeBest"]')!,
       score: container.querySelector('[data-el="score"]')!,
       scoreBest: container.querySelector('[data-el="scoreBest"]')!,
-      dashText: container.querySelector('[data-el="dashText"]')!,
-      dashBar: container.querySelector('[data-el="dashBar"]')!,
+      dashDots,
+      dashFill: container.querySelector('[data-el="dashFill"]')!,
       centerLabel: container.querySelector('[data-el="centerLabel"]')!,
       centerValue: container.querySelector('[data-el="centerValue"]')!,
-      centerBar: container.querySelector('.bar')!,
       centerBarFill: container.querySelector('[data-el="centerBarFill"]')!,
       centerStatus: container.querySelector('[data-el="centerStatus"]')!,
       combo,
@@ -86,23 +102,53 @@ export class HUD {
   }
 
   update(ctx: HUDContext): void {
-    this.el.altitude.textContent = formatAltitude(ctx.player.maxAltitude);
+    // Smoothly chase the target altitude/score so digits roll instead of snap.
+    const altTarget = ctx.player.maxAltitude;
+    const scoreTarget = ctx.scoring.total;
+    this.displayedAltitude += (altTarget - this.displayedAltitude) * 0.22;
+    this.displayedScore += (scoreTarget - this.displayedScore) * 0.22;
+    // Snap when within 1 unit to avoid endless asymptote.
+    if (Math.abs(altTarget - this.displayedAltitude) < 1) this.displayedAltitude = altTarget;
+    if (Math.abs(scoreTarget - this.displayedScore) < 1) this.displayedScore = scoreTarget;
+
+    this.el.altitude.textContent = formatAltitude(this.displayedAltitude);
     this.el.altitudeBest.textContent = formatAltitude(ctx.bestAltitude);
-    this.el.score.textContent = formatScore(ctx.scoring.total);
+    this.el.score.textContent = formatScore(Math.floor(this.displayedScore));
     this.el.scoreBest.textContent = formatScore(ctx.bestScore);
-    this.el.dashText.textContent = `${ctx.player.dashCharges} / ${PHYSICS.maxDashCharges}`;
+
+    // Dash dots — light up one per charge, soft pulse on the next one to come.
+    if (ctx.player.dashCharges !== this.lastDashCharges) {
+      this.lastDashCharges = ctx.player.dashCharges;
+      const dots = this.el.dashDots.children;
+      for (let i = 0; i < dots.length; i++) {
+        const dot = dots[i] as HTMLElement;
+        dot.classList.remove('full', 'charging');
+        if (i < ctx.player.dashCharges) dot.classList.add('full');
+        else if (i === ctx.player.dashCharges) dot.classList.add('charging');
+      }
+    }
     const rechargePct =
       ctx.player.dashCharges >= PHYSICS.maxDashCharges
         ? 100
         : (ctx.player.dashRecharge / PHYSICS.dashCooldownFrames) * 100;
-    this.el.dashBar.style.width = `${Math.min(100, rechargePct)}%`;
+    this.el.dashFill.style.width = `${Math.min(100, rechargePct)}%`;
 
+    // Combo: pulse the display on each integer step up.
     if (ctx.combo.combo > 1) {
       this.el.combo.classList.add('active');
       this.el.combo.textContent = `×${ctx.combo.combo}`;
+      if (ctx.combo.combo > this.lastCombo) {
+        this.el.combo.classList.add('pulse');
+        this.comboPulseTimer = 12;
+      }
     } else {
       this.el.combo.classList.remove('active');
     }
+    if (this.comboPulseTimer > 0) {
+      this.comboPulseTimer -= 1;
+      if (this.comboPulseTimer === 0) this.el.combo.classList.remove('pulse');
+    }
+    this.lastCombo = ctx.combo.combo;
 
     if (typeof ctx.modeTimer === 'number') {
       this.el.centerLabel.textContent = ctx.modeTimerLabel ?? 'Time';
@@ -112,7 +158,7 @@ export class HUD {
       this.el.centerValue.textContent = `${Math.floor(ctx.modeProgress * 100)}%`;
     } else {
       this.el.centerLabel.textContent = 'Altitude';
-      this.el.centerValue.textContent = formatAltitude(ctx.player.maxAltitude);
+      this.el.centerValue.textContent = formatAltitude(this.displayedAltitude);
     }
 
     if (typeof ctx.modeProgress === 'number') {
@@ -122,7 +168,7 @@ export class HUD {
     }
 
     if (ctx.raceStatus) {
-      this.el.centerStatus.innerHTML = `<span>${ctx.raceStatus}</span>`;
+      this.el.centerStatus.innerHTML = `<span>Position</span><strong>${ctx.raceStatus}</strong>`;
     } else {
       this.el.centerStatus.innerHTML = '';
     }

@@ -44,6 +44,7 @@ import { getSkin } from '../content/skins';
 import { getHook } from '../content/hooks';
 import { getTrail } from '../content/trails';
 import { clamp } from '../utils/math';
+import { withAlpha as withAlphaColor, mix as mixColor } from '../utils/color';
 import { utcDateKey } from '../utils/format';
 
 const WORLD_WIDTH = 1200;
@@ -400,6 +401,29 @@ export class Game {
     this.trailRenderer.push(this.player.pos.x, this.player.pos.y, trailDef, dt);
     this.trailRenderer.update(dt, trailDef);
 
+    // Thruster puffs — emit when moving fast or while swinging on the hook.
+    // This is gated by lowQuality so it never tanks perf on weak devices.
+    if (!this.lowQuality && !this.save.data.settings.reducedMotion) {
+      const speed = this.player.vel.len();
+      const swinging = this.player.hook.state === 'attached';
+      if (speed > 7 || swinging) {
+        const speedRatio = Math.min(1, speed / 22);
+        const emitChance = swinging ? 0.5 : 0.35 + speedRatio * 0.5;
+        if (Math.random() < emitChance) {
+          const vx = -this.player.vel.x * 0.18 + (Math.random() - 0.5) * 1.2;
+          const vy = -this.player.vel.y * 0.18 + (Math.random() - 0.5) * 1.2;
+          const skin = getSkin(this.save.data.equippedSkin);
+          this.particles.thruster(
+            this.player.pos.x - this.player.vel.x * 0.6,
+            this.player.pos.y - this.player.vel.y * 0.6,
+            vx,
+            vy,
+            skin.glow,
+          );
+        }
+      }
+    }
+
     // Record ghost frames every ~4 ticks for daily/endless
     if (this.mode === GameMode.DailyChallenge || this.mode === GameMode.EndlessClimb) {
       this.ghostRecordCounter += dt;
@@ -527,6 +551,7 @@ export class Game {
         this.renderer.ctx,
         this.player.hook,
         this.player.pos,
+        this.player.vel,
         hookDef,
         this.framesSinceStart,
         this.lowQuality,
@@ -575,19 +600,39 @@ export class Game {
   private drawLavaVignette(): void {
     if (!this.player) return;
     const distance = this.killY - this.player.pos.y;
-    if (distance > 480) return;
-    const intensity = Math.max(0, Math.min(1, 1 - distance / 480));
+    if (distance > 560) return;
+    const intensity = Math.max(0, Math.min(1, 1 - distance / 560));
     const ctx = this.renderer.ctx;
     ctx.save();
     const w = this.renderer.cssWidth;
     const h = this.renderer.cssHeight;
-    const grad = ctx.createRadialGradient(w / 2, h / 2, h * 0.3, w / 2, h / 2, h * 0.85);
-    grad.addColorStop(0, 'rgba(255,37,94,0)');
-    grad.addColorStop(1, `rgba(255,37,94,${0.42 * intensity})`);
+    // Bottom-anchored radial vignette — feels like heat radiating up.
+    const grad = ctx.createRadialGradient(
+      w / 2,
+      h * 1.05,
+      h * 0.15,
+      w / 2,
+      h * 1.05,
+      h * 1.05,
+    );
+    grad.addColorStop(0, `rgba(255,80,40,${0.55 * intensity})`);
+    grad.addColorStop(0.55, `rgba(255,37,94,${0.32 * intensity})`);
+    grad.addColorStop(1, 'rgba(255,37,94,0)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
-    if (intensity > 0.7 && Math.floor(this.framesSinceStart * 0.3) % 2 === 0) {
-      ctx.fillStyle = `rgba(255,37,94,${(intensity - 0.7) * 0.5})`;
+
+    // Thin pulsing band along the bottom warning of imminent danger.
+    if (intensity > 0.45) {
+      const pulse = 0.55 + Math.sin(this.framesSinceStart * 0.22) * 0.45;
+      const band = ctx.createLinearGradient(0, h - 60, 0, h);
+      band.addColorStop(0, 'rgba(255,80,40,0)');
+      band.addColorStop(1, `rgba(255,200,60,${0.4 * intensity * pulse})`);
+      ctx.fillStyle = band;
+      ctx.fillRect(0, h - 60, w, 60);
+    }
+    // High-danger full-screen flash (subtle).
+    if (intensity > 0.75 && Math.floor(this.framesSinceStart * 0.3) % 2 === 0) {
+      ctx.fillStyle = `rgba(255,37,94,${(intensity - 0.75) * 0.35})`;
       ctx.fillRect(0, 0, w, h);
     }
     ctx.restore();
@@ -675,19 +720,70 @@ export class Game {
   private drawPlayer(player: Player, primary: string, glow: string, isBot: boolean): void {
     if (player.dead) return;
     const ctx = this.renderer.ctx;
+    const speed = player.vel.len();
+    const fast = Math.min(1, speed / 22);
+
+    // Outer bloom — drawn under the body, additive, scales with speed.
+    if (!this.lowQuality) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const bloomR = player.radius * (isBot ? 2.0 : 2.8) + fast * 6;
+      const bloom = ctx.createRadialGradient(
+        player.pos.x,
+        player.pos.y,
+        0,
+        player.pos.x,
+        player.pos.y,
+        bloomR,
+      );
+      const a = isBot ? 0.18 : 0.32 + fast * 0.18;
+      bloom.addColorStop(0, withAlphaColor(glow, a));
+      bloom.addColorStop(0.5, withAlphaColor(glow, a * 0.4));
+      bloom.addColorStop(1, withAlphaColor(glow, 0));
+      ctx.fillStyle = bloom;
+      ctx.beginPath();
+      ctx.arc(player.pos.x, player.pos.y, bloomR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     ctx.save();
     ctx.translate(player.pos.x, player.pos.y);
     const angle = Math.atan2(player.vel.y, player.vel.x) || -Math.PI / 2;
     ctx.rotate(angle + Math.PI / 2);
+
+    // Motion streak behind the ship when moving fast.
+    if (!this.lowQuality && fast > 0.4 && !isBot) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const streakLen = player.radius * (1.6 + fast * 3);
+      const streak = ctx.createLinearGradient(0, player.radius, 0, player.radius + streakLen);
+      streak.addColorStop(0, withAlphaColor(glow, 0.55 * fast));
+      streak.addColorStop(1, withAlphaColor(glow, 0));
+      ctx.fillStyle = streak;
+      ctx.beginPath();
+      ctx.moveTo(-player.radius * 0.6, player.radius * 0.7);
+      ctx.lineTo(player.radius * 0.6, player.radius * 0.7);
+      ctx.lineTo(0, player.radius + streakLen);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
     if (!this.lowQuality) {
       ctx.shadowColor = glow;
-      ctx.shadowBlur = isBot ? 6 : 16;
+      ctx.shadowBlur = isBot ? 6 : 14;
     }
     if (player.dashFlashTimer > 0) {
-      ctx.shadowBlur = 28;
+      ctx.shadowBlur = 30;
       ctx.shadowColor = '#ffffff';
     }
-    ctx.fillStyle = primary;
+    // Ship body — gradient fill for depth.
+    const bodyGrad = ctx.createLinearGradient(0, -player.radius * 1.4, 0, player.radius);
+    bodyGrad.addColorStop(0, '#ffffff');
+    bodyGrad.addColorStop(0.35, primary);
+    bodyGrad.addColorStop(1, mixColor(primary, '#000000', 0.45));
+    ctx.fillStyle = bodyGrad;
     ctx.beginPath();
     ctx.moveTo(0, -player.radius * 1.4);
     ctx.lineTo(player.radius, player.radius);
@@ -695,10 +791,22 @@ export class Game {
     ctx.lineTo(-player.radius, player.radius);
     ctx.closePath();
     ctx.fill();
+    // Cockpit glint
     ctx.fillStyle = '#ffffff';
+    ctx.shadowBlur = 0;
     ctx.beginPath();
-    ctx.arc(0, -player.radius * 0.3, player.radius * 0.4, 0, Math.PI * 2);
+    ctx.arc(0, -player.radius * 0.3, player.radius * 0.32, 0, Math.PI * 2);
     ctx.fill();
+    // Edge highlight
+    ctx.strokeStyle = withAlphaColor(glow, 0.9);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(0, -player.radius * 1.4);
+    ctx.lineTo(player.radius, player.radius);
+    ctx.lineTo(0, player.radius * 0.5);
+    ctx.lineTo(-player.radius, player.radius);
+    ctx.closePath();
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -724,22 +832,64 @@ export class Game {
     const w = WORLD_WIDTH;
     const x = -w / 2;
     const y = this.killY;
-    const grad = ctx.createLinearGradient(0, y - 60, 0, y + 240);
+    // Body of lava — vertical gradient with heat haze above.
+    const grad = ctx.createLinearGradient(0, y - 90, 0, y + 280);
     grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(0.4, colors[0]);
+    grad.addColorStop(0.18, withAlphaColor(colors[0], 0.4));
+    grad.addColorStop(0.42, colors[0]);
     grad.addColorStop(1, colors[1]);
     ctx.fillStyle = grad;
-    ctx.fillRect(x - 800, y, w + 1600, 800);
+    ctx.fillRect(x - 800, y - 60, w + 1600, 860);
+
+    // Subtle inner glow band right under the surface.
+    if (!this.lowQuality) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const glow = ctx.createLinearGradient(0, y - 30, 0, y + 80);
+      glow.addColorStop(0, 'rgba(0,0,0,0)');
+      glow.addColorStop(0.5, withAlphaColor('#ffd200', 0.3));
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(x - 800, y - 30, w + 1600, 110);
+      ctx.restore();
+    }
+
+    // Wave crest — two layered sines for a richer surface.
+    ctx.save();
+    if (!this.lowQuality) {
+      ctx.shadowColor = colors[0];
+      ctx.shadowBlur = 16;
+    }
+    ctx.strokeStyle = '#fff7c2';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = -12; i <= 12; i++) {
+      const xi = i * (w / 12);
+      const wave = Math.sin(this.framesSinceStart * 0.04 + i) * 4 + Math.sin(this.framesSinceStart * 0.09 + i * 0.7) * 2.5;
+      if (i === -12) ctx.moveTo(xi, y + wave);
+      else ctx.lineTo(xi, y + wave);
+    }
+    ctx.stroke();
     ctx.strokeStyle = colors[0];
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (let i = -10; i <= 10; i++) {
       const xi = i * (w / 10);
       const wave = Math.sin(this.framesSinceStart * 0.04 + i) * 6;
-      if (i === -10) ctx.moveTo(xi, y + wave);
-      else ctx.lineTo(xi, y + wave);
+      if (i === -10) ctx.moveTo(xi, y + wave + 3);
+      else ctx.lineTo(xi, y + wave + 3);
     }
     ctx.stroke();
+    ctx.restore();
+
+    // Emit embers occasionally — only when lava is near the player to save CPU.
+    if (!this.lowQuality && !this.save.data.settings.reducedMotion) {
+      const distToPlayer = y - this.player.pos.y;
+      if (distToPlayer < 800 && Math.random() < 0.55) {
+        const ex = this.player.pos.x + (Math.random() - 0.5) * this.renderer.cssWidth * 0.9;
+        this.particles.ember(ex, y - 4, Math.random() < 0.5 ? colors[0] : '#ffd200');
+      }
+    }
   }
 
   private isVisible(x: number, y: number, padding: number): boolean {

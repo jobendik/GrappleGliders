@@ -22,38 +22,61 @@ export class MainMenu {
 
   open(save: SaveSystem, daily: DailyChallengeSystem, cb: MainMenuCallbacks): void {
     this.close();
-    // Find yesterday's daily entry, if any, to surface as a callback hook.
     const today = daily.today();
     const yesterdayEntry = save.data.dailyHistory.find((d) => d.date !== today.date);
     const yesterdayLine = yesterdayEntry
-      ? `<div class="row" style="font-size:11px;color:rgba(234,255,255,0.55);margin-top:2px">Yesterday you scored ${formatScore(yesterdayEntry.score)}. Beat it?</div>`
+      ? `<div class="row" style="font-size:11px;color:var(--muted-soft);margin-top:6px;justify-content:flex-start;gap:6px"><span>Yesterday:</span><strong>${formatScore(yesterdayEntry.score)}</strong><span>· beat it?</span></div>`
       : '';
     const overlay = document.createElement('div');
     overlay.className = 'overlay-screen';
     const modal = document.createElement('div');
     modal.className = 'modal';
+    const playLabel = save.data.settings.tutorialSeen ? 'Start Endless Climb' : 'Start Tutorial Run';
     modal.innerHTML = `
       <div class="modal-content">
-        <h1 class="title gradient-text">Grapple<br>Gliders</h1>
-        <p class="subtitle">Tap and hold to fire your grappling hook. Release to fling. Outrun the rising lava. Climb forever.</p>
-        <div class="stat-grid">
-          <div class="stat"><span class="label">Sparks</span><div class="value" data-el="sparks">0</div></div>
-          <div class="stat"><span class="label">Level</span><div class="value" data-el="level">1</div></div>
-          <div class="stat"><span class="label">Best Climb</span><div class="value" data-el="best">0 m</div></div>
-          <div class="stat"><span class="label">Streak</span><div class="value" data-el="streak">0 d</div></div>
+        <div class="hero">
+          <div>
+            <span class="eyebrow">Neon Synthwave Climber</span>
+            <h1 class="title gradient-text">Grapple<br>Gliders</h1>
+            <p class="subtitle">Fire your hook. Sling across the skyline. Outrun the rising lava — and chase a daily seed shared with every player on Earth.</p>
+            <div class="hero-cta">
+              <button class="primary large" data-el="play">${playLabel}</button>
+              <button class="ghost" data-el="unlocks">Unlocks</button>
+            </div>
+          </div>
+          <div class="hero-stats">
+            <div class="hero-stat">
+              <span class="label">Sparks</span>
+              <div class="value accent" data-el="sparks">0</div>
+            </div>
+            <div class="hero-stat">
+              <span class="label">Level</span>
+              <div class="value" data-el="level">1</div>
+            </div>
+            <div class="hero-stat">
+              <span class="label">Best Climb</span>
+              <div class="value" data-el="best">0 m</div>
+            </div>
+            <div class="hero-stat">
+              <span class="label">Streak</span>
+              <div class="value" data-el="streak">0 d</div>
+            </div>
+          </div>
         </div>
-        <div class="mode-grid" data-el="modes"></div>
-        <div class="stat" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+
+        <div class="daily-strip">
           <div>
             <span class="label">Daily Challenge</span>
-            <div style="font-size:14px;color:var(--muted)">New seeded run in <strong data-el="countdown">--:--:--</strong></div>
+            <div class="info">New seeded run in <strong data-el="countdown">--:--:--</strong></div>
             ${yesterdayLine}
           </div>
           <button class="primary" data-el="daily">${daily.hasSubmittedToday() ? 'Replay (Practice)' : 'Play Daily'}</button>
         </div>
+
+        <h3 class="section">Choose a Mode</h3>
+        <div class="mode-grid" data-el="modes"></div>
+
         <div class="actions">
-          <button class="primary" data-el="play">Start Endless Climb</button>
-          <button class="ghost" data-el="unlocks">Unlocks</button>
           <button class="ghost" data-el="leaderboard">Leaderboard</button>
           <button class="ghost" data-el="settings">Settings</button>
           ${save.data.settings.tutorialSeen ? '<button class="ghost" data-el="tutorial">Tutorial</button>' : ''}
@@ -64,8 +87,8 @@ export class MainMenu {
     this.root.appendChild(overlay);
     this.el = overlay;
 
-    const sparks = modal.querySelector<HTMLElement>('[data-el="sparks"]')!;
-    sparks.textContent = save.data.sparks.toLocaleString('en-US');
+    modal.querySelector<HTMLElement>('[data-el="sparks"]')!.textContent =
+      save.data.sparks.toLocaleString('en-US');
     modal.querySelector<HTMLElement>('[data-el="level"]')!.textContent = String(save.data.level);
     modal.querySelector<HTMLElement>('[data-el="best"]')!.textContent = `${Math.floor(
       save.data.bestAltitude[GameMode.EndlessClimb] ?? 0,
@@ -77,22 +100,23 @@ export class MainMenu {
       const meta = MODES[mode];
       const card = document.createElement('button');
       card.className = 'mode-card';
-      card.style.borderColor = `color-mix(in srgb, ${meta.iconColor} 40%, transparent)`;
+      card.style.setProperty('--mode-tint', meta.iconColor);
       card.innerHTML = `
-        <h3 style="color:${meta.iconColor}">${meta.name}</h3>
+        <h3>${meta.name}</h3>
         <p>${meta.tagline}</p>
-        <p style="margin-top:6px;color:var(--white);font-size:11px">${this.bestSummary(save, mode)}</p>
+        <div class="best">${this.bestSummary(save, mode)}</div>
       `;
       card.addEventListener('click', () => cb.onPlay(mode));
       modes.appendChild(card);
     });
 
-    modal.querySelector('[data-el="play"]')!.addEventListener('click', () =>
-      cb.onPlay(GameMode.EndlessClimb),
-    );
-    modal.querySelector('[data-el="daily"]')!.addEventListener('click', () =>
-      cb.onPlay(GameMode.DailyChallenge),
-    );
+    modal.querySelector('[data-el="play"]')!.addEventListener('click', () => {
+      if (save.data.settings.tutorialSeen) cb.onPlay(GameMode.EndlessClimb);
+      else cb.onTutorial();
+    });
+    modal
+      .querySelector('[data-el="daily"]')!
+      .addEventListener('click', () => cb.onPlay(GameMode.DailyChallenge));
     modal.querySelector('[data-el="unlocks"]')!.addEventListener('click', cb.onUnlocks);
     modal
       .querySelector('[data-el="leaderboard"]')!
@@ -101,7 +125,7 @@ export class MainMenu {
     modal.querySelector('[data-el="tutorial"]')?.addEventListener('click', cb.onTutorial);
 
     const countdown = modal.querySelector<HTMLElement>('[data-el="countdown"]')!;
-    const updateCountdown = () => {
+    const updateCountdown = (): void => {
       countdown.textContent = formatCountdown(daily.millisecondsUntilNextUTC());
     };
     updateCountdown();
