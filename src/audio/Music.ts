@@ -115,6 +115,13 @@ export class Music {
     this.bus.gain.value = Math.max(0, Math.min(1, v));
   }
 
+  /** 0..1 — eased volume scale used to swell the music as combo rises. */
+  setIntensity(t: number): void {
+    if (!this.bus || !this.engine.ctx) return;
+    const target = 0.32 + Math.max(0, Math.min(1, t)) * 0.4;
+    this.bus.gain.setTargetAtTime(target, this.engine.ctx.currentTime, 0.4);
+  }
+
   stop(): void {
     if (this.scheduler) {
       clearInterval(this.scheduler);

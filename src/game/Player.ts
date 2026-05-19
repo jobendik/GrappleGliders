@@ -1,6 +1,6 @@
 import { PHYSICS, Vec2 } from './Physics';
 import { GrapplingHook, type HookConnectEvent } from './GrapplingHook';
-import type { Obstacle, World } from './World';
+import type { Obstacle, PickupKind, World } from './World';
 
 export interface PlayerInputState {
   moveX: number;
@@ -18,6 +18,7 @@ export interface PlayerEvents {
   onDeath: (cause: string) => void;
   onNearMiss: (obs: Obstacle, distance: number) => void;
   onBounce: (obs: Obstacle) => void;
+  onPickup: (kind: PickupKind, obs: Obstacle) => void;
 }
 
 const DEFAULT_EVENTS: PlayerEvents = {
@@ -27,6 +28,7 @@ const DEFAULT_EVENTS: PlayerEvents = {
   onDeath: () => undefined,
   onNearMiss: () => undefined,
   onBounce: () => undefined,
+  onPickup: () => undefined,
 };
 
 export class Player {
@@ -43,6 +45,10 @@ export class Player {
   hook = new GrapplingHook();
   events: PlayerEvents = DEFAULT_EVENTS;
   maxAltitude = 0;
+  /** Shield charges absorbed from shield-pickup. */
+  shield = 0;
+  /** Frames remaining for the magnet pickup effect. */
+  magnetFrames = 0;
   /** Tracks near-miss debounce per obstacle id. */
   private nearMissed = new Set<number>();
 
@@ -67,6 +73,8 @@ export class Player {
     this.invuln = 0;
     this.hook.reset();
     this.maxAltitude = 0;
+    this.shield = 0;
+    this.magnetFrames = 0;
     this.nearMissed.clear();
   }
 
@@ -168,11 +176,20 @@ export class Player {
     }
 
     if (this.invuln > 0) this.invuln -= dt;
+    if (this.magnetFrames > 0) this.magnetFrames -= dt;
 
     // Lava / kill line
     if (this.pos.y > killY - this.radius * 0.6) {
-      this.die('Consumed by the lava');
-      return;
+      if (this.shield > 0) {
+        this.shield -= 1;
+        // Knock the player back up so they don't insta-die after spending the shield.
+        this.pos.y = killY - this.radius * 4;
+        this.vel.y = -12;
+        this.invuln = 30;
+      } else {
+        this.die('Consumed by the lava');
+        return;
+      }
     }
 
     // Track altitude (negative Y is up)
@@ -216,18 +233,41 @@ export class Player {
 
   private checkObstacleInteractions(world: World): void {
     const seenIds = new Set<number>();
+    const magnetRadius = this.magnetFrames > 0 ? 140 : 0;
     for (const o of world.obstacles) {
+      if (o.collected) continue;
       const cx = o.x + o.width / 2;
       const cy = o.y + o.height / 2;
       const dx = this.pos.x - cx;
       const dy = this.pos.y - cy;
       const dist = Math.hypot(dx, dy);
 
+      // Pickup collection: physical touch, plus magnet pull-in radius for sparks.
+      if (o.pickup) {
+        const pickupDist = this.radius + Math.max(o.width, o.height) / 2;
+        if (
+          dist < pickupDist ||
+          (o.kind === 'spark' && magnetRadius > 0 && dist < magnetRadius)
+        ) {
+          o.collected = true;
+          if (o.kind === 'shield-pickup') this.shield = Math.min(2, this.shield + 1);
+          if (o.kind === 'magnet-pickup') this.magnetFrames = Math.max(this.magnetFrames, 360);
+          this.events.onPickup(o.kind as PickupKind, o);
+          continue;
+        }
+      }
+
       if (o.lethal && dist < this.radius + Math.max(o.width, o.height) / 2 && this.invuln <= 0) {
         // Tight rect test for spikes
         const insideX = this.pos.x > o.x - this.radius && this.pos.x < o.x + o.width + this.radius;
         const insideY = this.pos.y > o.y - this.radius && this.pos.y < o.y + o.height + this.radius;
         if (insideX && insideY) {
+          if (this.shield > 0) {
+            this.shield -= 1;
+            this.invuln = 40;
+            this.vel.y = -10;
+            continue;
+          }
           this.die('Impaled on spikes');
           return;
         }

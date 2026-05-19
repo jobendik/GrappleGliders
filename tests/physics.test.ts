@@ -21,6 +21,8 @@ const makeObstacle = (overrides: Partial<Obstacle>): Obstacle => ({
   grappleable: true,
   lethal: false,
   bouncy: false,
+  pickup: false,
+  collected: false,
   unstableTimer: 0,
   unstableTriggered: false,
   amp: 0,

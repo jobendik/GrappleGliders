@@ -38,6 +38,13 @@ export class GameOverScreen {
     this.close();
     const overlay = document.createElement('div');
     overlay.className = 'overlay-screen';
+    // Tap anywhere on the dimmed background to retry — biggest mobile flow win.
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) {
+        this.close();
+        cb.onRetry();
+      }
+    });
     const modal = document.createElement('div');
     modal.className = 'modal';
     modal.innerHTML = `
@@ -67,6 +74,7 @@ export class GameOverScreen {
           <button class="ghost" data-el="x2">Double Sparks (watch ad)</button>
           <button class="ghost" data-el="menu">Main Menu</button>
         </div>
+        <p class="subtitle" style="font-size:11px;margin-top:14px;color:rgba(234,255,255,0.45);text-align:center">Tap anywhere outside this card to retry instantly.</p>
       </div>
     `;
     overlay.appendChild(modal);

@@ -8,7 +8,13 @@ export type ObstacleKind =
   | 'unstable'
   | 'bouncy'
   | 'spike'
-  | 'drone';
+  | 'drone'
+  | 'spark'
+  | 'shield-pickup'
+  | 'magnet-pickup'
+  | 'slow-pickup';
+
+export type PickupKind = 'spark' | 'shield-pickup' | 'magnet-pickup' | 'slow-pickup';
 
 export interface Obstacle extends Rect {
   id: number;
@@ -24,6 +30,10 @@ export interface Obstacle extends Rect {
   driftSpeed: number;
   lastX: number;
   pulse: number;
+  /** True for pickups: they're consumed on touch and never collide solidly. */
+  pickup: boolean;
+  /** True once collected; cleared from world next update. */
+  collected: boolean;
 }
 
 export const OBSTACLE_COLORS: Record<ObstacleKind, string> = {
@@ -33,7 +43,17 @@ export const OBSTACLE_COLORS: Record<ObstacleKind, string> = {
   bouncy: '#00ff8a',
   spike: '#ff255e',
   drone: '#ff2bff',
+  spark: '#ffd400',
+  'shield-pickup': '#00ff8a',
+  'magnet-pickup': '#a45cff',
+  'slow-pickup': '#a4f0ff',
 };
+
+export const isPickup = (kind: ObstacleKind): kind is PickupKind =>
+  kind === 'spark' ||
+  kind === 'shield-pickup' ||
+  kind === 'magnet-pickup' ||
+  kind === 'slow-pickup';
 
 export interface WorldConfig {
   seed: number;
@@ -50,12 +70,15 @@ let nextObstacleId = 1;
 
 const createObstacle = (partial: Partial<Obstacle> & Pick<Obstacle, 'x' | 'y' | 'width' | 'height' | 'kind'>): Obstacle => {
   const kind = partial.kind;
+  const pickup = isPickup(kind);
   return {
     id: nextObstacleId++,
     color: OBSTACLE_COLORS[kind],
-    grappleable: kind !== 'spike',
+    grappleable: !pickup && kind !== 'spike',
     lethal: kind === 'spike',
     bouncy: kind === 'bouncy',
+    pickup,
+    collected: false,
     unstableTimer: 0,
     unstableTriggered: false,
     amp: 0,
@@ -206,6 +229,38 @@ export class World {
       obs.driftSpeed = 0.4 + this.rng.next() * 0.6;
       this.obstacles.push(obs);
     }
+
+    // Mid-air sparks scattered between platforms (high frequency, immediate reward loop).
+    if (this.rng.next() < 0.55) {
+      const sparkCount = 1 + (this.rng.next() < 0.3 ? 1 : 0);
+      for (let i = 0; i < sparkCount; i++) {
+        const sx = this.pathX + (this.rng.next() - 0.5) * 320;
+        const sy = y - 40 - this.rng.next() * 80;
+        this.obstacles.push(
+          createObstacle({
+            x: clamp(sx, -half + 14, half - 14) - 8,
+            y: sy,
+            width: 16,
+            height: 16,
+            kind: 'spark',
+          }),
+        );
+      }
+    }
+    // Rarer powerup drops — pickable circles that grant a temporary effect.
+    if (this.rng.next() < 0.06) {
+      const r = this.rng.next();
+      const kind: PickupKind = r < 0.4 ? 'shield-pickup' : r < 0.75 ? 'slow-pickup' : 'magnet-pickup';
+      this.obstacles.push(
+        createObstacle({
+          x: this.pathX - 14,
+          y: y - 90,
+          width: 28,
+          height: 28,
+          kind,
+        }),
+      );
+    }
   }
 
   /** Advance time-dependent obstacle behavior: drone drift, unstable countdown. */
@@ -214,6 +269,10 @@ export class World {
       const o = this.obstacles[i]!;
       o.lastX = o.x;
       o.pulse = (o.pulse + dt * 0.04) % (Math.PI * 2);
+      if (o.collected) {
+        this.obstacles.splice(i, 1);
+        continue;
+      }
       if (o.kind === 'drone' && o.amp) {
         o.driftAngle += o.driftSpeed * dt * 0.02;
         const baseX = o.x - Math.sin(o.driftAngle - o.driftSpeed * dt * 0.02) * o.amp;

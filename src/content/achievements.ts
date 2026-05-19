@@ -41,6 +41,8 @@ export const ACHIEVEMENTS: AchievementDef[] = [
   { id: 'level-5', name: 'Pilot Trainee', description: 'Reach level 5.', reward: 100, target: 5 },
   { id: 'level-10', name: 'Pilot Veteran', description: 'Reach level 10.', reward: 300, target: 10 },
   { id: 'level-20', name: 'Pilot Legend', description: 'Reach level 20.', reward: 800, target: 20 },
+  { id: 'sparks-50', name: 'Spark Hunter', description: 'Collect 50 sparks in a single run.', reward: 75, target: 50 },
+  { id: 'shield-saved', name: 'Saved by the Bell', description: 'Survive a hit using a shield.', reward: 60 },
 ];
 
 export const getAchievement = (id: string): AchievementDef | undefined =>

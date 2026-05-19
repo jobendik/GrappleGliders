@@ -22,6 +22,12 @@ export class MainMenu {
 
   open(save: SaveSystem, daily: DailyChallengeSystem, cb: MainMenuCallbacks): void {
     this.close();
+    // Find yesterday's daily entry, if any, to surface as a callback hook.
+    const today = daily.today();
+    const yesterdayEntry = save.data.dailyHistory.find((d) => d.date !== today.date);
+    const yesterdayLine = yesterdayEntry
+      ? `<div class="row" style="font-size:11px;color:rgba(234,255,255,0.55);margin-top:2px">Yesterday you scored ${formatScore(yesterdayEntry.score)}. Beat it?</div>`
+      : '';
     const overlay = document.createElement('div');
     overlay.className = 'overlay-screen';
     const modal = document.createElement('div');
@@ -37,10 +43,11 @@ export class MainMenu {
           <div class="stat"><span class="label">Streak</span><div class="value" data-el="streak">0 d</div></div>
         </div>
         <div class="mode-grid" data-el="modes"></div>
-        <div class="stat" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div class="stat" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
           <div>
             <span class="label">Daily Challenge</span>
             <div style="font-size:14px;color:var(--muted)">New seeded run in <strong data-el="countdown">--:--:--</strong></div>
+            ${yesterdayLine}
           </div>
           <button class="primary" data-el="daily">${daily.hasSubmittedToday() ? 'Replay (Practice)' : 'Play Daily'}</button>
         </div>

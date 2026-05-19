@@ -158,6 +158,12 @@ export class Game {
   private hookAttachedFrames = 0;
   /** Single-attempt-per-day gating for daily challenge ranked. */
   private dailyRankedThisAttempt = false;
+  /** Sparks collected during the current run (mid-run rewards). */
+  private runSparks = 0;
+  /** Highest milestone celebrated this run (rounded down to nearest 250 then 500). */
+  private nextMilestone = 100;
+  /** Frames remaining of "slow lava" effect from the slow-pickup. */
+  private slowLavaFrames = 0;
 
   constructor(opts: {
     canvas: HTMLCanvasElement;
@@ -196,6 +202,16 @@ export class Game {
       if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
       this.audio.setEnabled('sfx', this.save.data.settings.sound);
       this.audio.setEnabled('music', this.save.data.settings.music);
+    });
+
+    // Auto-pause when the tab loses focus — avoids "I tabbed away and died".
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.state === GameState.Playing && !this.paused) {
+        this.pause();
+      }
+    });
+    window.addEventListener('blur', () => {
+      if (this.state === GameState.Playing && !this.paused) this.pause();
     });
 
     // Achievement check for streak rewards on boot
@@ -277,7 +293,14 @@ export class Game {
     this.framesSinceStart += dt;
     this.elapsedSeconds += dt / 60;
     this.world.update(dt);
-    this.world.generateUpTo(this.camera.position.y - this.renderer.cssHeight);
+    // Generate above whichever actor (player or bot) is currently highest.
+    let topActorY = this.player.pos.y;
+    for (const bot of this.bots) {
+      if (bot.player.pos.y < topActorY) topActorY = bot.player.pos.y;
+    }
+    this.world.generateUpTo(
+      Math.min(this.camera.position.y, topActorY) - this.renderer.cssHeight,
+    );
 
     if (this.mode === GameMode.ComboRun) {
       this.modeTimer = COMBO_RUN_SECONDS - this.elapsedSeconds;
@@ -306,7 +329,12 @@ export class Game {
 
     // Lava (kill line) drifts upward when in modes that use it.
     if (this.usesLava()) {
-      this.killY -= this.lavaSpeed * dt;
+      if (this.slowLavaFrames > 0) {
+        this.slowLavaFrames -= dt;
+        this.killY -= this.lavaSpeed * 0.25 * dt;
+      } else {
+        this.killY -= this.lavaSpeed * dt;
+      }
       this.world.setKillY(this.killY);
     }
 
@@ -396,9 +424,49 @@ export class Game {
     this.achievements.setProgress('near-miss-25', this.combo.nearMisses, this.notifyUnlock);
     this.achievements.setProgress('near-miss-200', this.combo.nearMisses, this.notifyUnlock);
     this.achievements.setProgress('dash-50', this.dashCount, this.notifyUnlock);
+    this.achievements.setProgress('sparks-50', this.runSparks, this.notifyUnlock);
+
+    // Altitude milestones: 100, 250, 500, then every 500.
+    while (this.player.maxAltitude >= this.nextMilestone) {
+      this.celebrateMilestone(this.nextMilestone);
+      if (this.nextMilestone < 500) this.nextMilestone += 250;
+      else this.nextMilestone += 500;
+    }
+
+    // Music intensity follows combo.
+    if (this.save.data.settings.music) {
+      this.music.setIntensity(Math.min(1, (this.combo.combo - 1) / 9));
+    }
 
     if (this.player.dead && !this.gameEnded) {
       this.endRun(this.lastCause);
+    }
+  }
+
+  private celebrateMilestone(altitude: number): void {
+    if (!this.player) return;
+    this.screen.addFloatingText(
+      `${altitude}M`,
+      this.player.pos.x,
+      this.player.pos.y - 70,
+      '#ffd400',
+      { size: 32, life: 1.6, vy: -1.6 },
+    );
+    this.particles.burst(this.player.pos.x, this.player.pos.y - 30, 18, '#ffd400', { speed: 0.9 });
+    this.sfx.combo(Math.min(8, Math.floor(altitude / 500) + 2));
+    this.camera.flash(0.18);
+    this.haptics.trigger('comboMilestone');
+    // Mid-run Sparks reward at major milestones.
+    if (altitude >= 500 && altitude % 500 === 0) {
+      const reward = Math.min(50, Math.floor(altitude / 100));
+      this.runSparks += reward;
+      this.screen.addFloatingText(
+        `+${reward} SPARKS`,
+        this.player.pos.x,
+        this.player.pos.y - 38,
+        '#ffd400',
+        { size: 14, life: 1.4 },
+      );
     }
   }
 
@@ -429,6 +497,8 @@ export class Game {
       if (this.usesLava()) {
         this.drawLava(theme.lava);
       }
+      // Personal best altitude line
+      this.drawPersonalBestLine();
       // Obstacles
       this.drawObstacles(this.world.obstacles, dt);
       // Trail
@@ -460,8 +530,79 @@ export class Game {
       // Floating texts
       this.screen.drawWorld(this.renderer.ctx);
       this.renderer.popCamera();
+      // Lava-proximity vignette on top of the world.
+      if (this.usesLava()) this.drawLavaVignette();
+      // Shield indicator near player
+      if (this.player.shield > 0) this.drawShieldHalo();
     }
     this.screen.drawScreen(this.renderer, this.camera);
+  }
+
+  private drawPersonalBestLine(): void {
+    if (this.mode !== GameMode.EndlessClimb && this.mode !== GameMode.DailyChallenge) return;
+    if (!this.player) return;
+    const best = this.save.data.bestAltitude[this.mode] ?? 0;
+    if (best <= 50) return;
+    if (this.player.maxAltitude >= best) return;
+    const y = -best * 10;
+    const ctx = this.renderer.ctx;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,212,0,0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([10, 6]);
+    ctx.beginPath();
+    ctx.moveTo(this.camera.position.x - this.renderer.cssWidth, y);
+    ctx.lineTo(this.camera.position.x + this.renderer.cssWidth, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ffd400';
+    ctx.font = '700 12px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(
+      `PB ${Math.floor(best)} M`,
+      this.camera.position.x - this.renderer.cssWidth / 2 + 16,
+      y - 8,
+    );
+    ctx.restore();
+  }
+
+  private drawLavaVignette(): void {
+    if (!this.player) return;
+    const distance = this.killY - this.player.pos.y;
+    if (distance > 480) return;
+    const intensity = Math.max(0, Math.min(1, 1 - distance / 480));
+    const ctx = this.renderer.ctx;
+    ctx.save();
+    const w = this.renderer.cssWidth;
+    const h = this.renderer.cssHeight;
+    const grad = ctx.createRadialGradient(w / 2, h / 2, h * 0.3, w / 2, h / 2, h * 0.85);
+    grad.addColorStop(0, 'rgba(255,37,94,0)');
+    grad.addColorStop(1, `rgba(255,37,94,${0.42 * intensity})`);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+    if (intensity > 0.7 && Math.floor(this.framesSinceStart * 0.3) % 2 === 0) {
+      ctx.fillStyle = `rgba(255,37,94,${(intensity - 0.7) * 0.5})`;
+      ctx.fillRect(0, 0, w, h);
+    }
+    ctx.restore();
+  }
+
+  private drawShieldHalo(): void {
+    if (!this.player) return;
+    const ctx = this.renderer.ctx;
+    this.renderer.pushCamera(this.camera);
+    const pulse = 0.6 + Math.sin(this.framesSinceStart * 0.2) * 0.4;
+    ctx.strokeStyle = `rgba(0,255,138,${0.5 + pulse * 0.3})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(this.player.pos.x, this.player.pos.y, this.player.radius + 6 + pulse * 2, 0, Math.PI * 2);
+    ctx.stroke();
+    if (this.player.shield > 1) {
+      ctx.beginPath();
+      ctx.arc(this.player.pos.x, this.player.pos.y, this.player.radius + 10 + pulse * 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    this.renderer.popCamera();
   }
 
   private drawObstacles(obstacles: Obstacle[], _dt: number): void {
@@ -498,6 +639,24 @@ export class Game {
         ctx.beginPath();
         ctx.moveTo(o.x - 6, o.y + o.height / 2);
         ctx.lineTo(o.x + o.width + 6, o.y + o.height / 2);
+        ctx.stroke();
+      } else if (o.kind === 'spark') {
+        const bob = Math.sin(o.pulse * 3) * 3;
+        ctx.beginPath();
+        ctx.arc(cx, cy + bob, 6 + Math.sin(o.pulse) * 1.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else if (o.kind === 'shield-pickup' || o.kind === 'magnet-pickup' || o.kind === 'slow-pickup') {
+        const bob = Math.sin(o.pulse * 2) * 4;
+        ctx.beginPath();
+        ctx.arc(cx, cy + bob, Math.max(o.width, o.height) / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy + bob, Math.max(o.width, o.height) / 2 - 4, 0, Math.PI * 2);
         ctx.stroke();
       } else {
         ctx.fillRect(o.x, o.y, o.width, o.height);
@@ -770,6 +929,40 @@ export class Game {
         this.particles.burst(obs.x + obs.width / 2, obs.y + obs.height / 2, 12, obs.color, { speed: 0.7 });
         this.haptics.trigger('bounce');
       },
+      onPickup: (kind, obs) => {
+        const cx = obs.x + obs.width / 2;
+        const cy = obs.y + obs.height / 2;
+        switch (kind) {
+          case 'spark': {
+            this.runSparks += 1;
+            this.scoring.addBonus(20);
+            this.particles.burst(cx, cy, 8, '#ffd400', { speed: 0.6 });
+            this.sfx.blip('spark', { freq: 880, duration: 0.05, type: 'triangle', gain: 0.03, slide: 360 });
+            this.screen.addFloatingText('+1', cx, cy - 6, '#ffd400', { size: 12, life: 0.6 });
+            break;
+          }
+          case 'shield-pickup':
+            this.particles.burst(cx, cy, 18, '#00ff8a', { speed: 0.8 });
+            this.sfx.unlock();
+            this.haptics.trigger('unlock');
+            this.screen.addFloatingText('SHIELD', cx, cy - 12, '#00ff8a', { size: 14 });
+            this.toast.show('Shield ready — blocks the next hit.');
+            break;
+          case 'magnet-pickup':
+            this.particles.burst(cx, cy, 18, '#a45cff', { speed: 0.8 });
+            this.sfx.unlock();
+            this.haptics.trigger('unlock');
+            this.screen.addFloatingText('MAGNET', cx, cy - 12, '#a45cff', { size: 14 });
+            break;
+          case 'slow-pickup':
+            this.slowLavaFrames = Math.max(this.slowLavaFrames, 600);
+            this.particles.burst(cx, cy, 18, '#a4f0ff', { speed: 0.8 });
+            this.sfx.unlock();
+            this.haptics.trigger('unlock');
+            this.screen.addFloatingText('SLOW LAVA', cx, cy - 12, '#a4f0ff', { size: 14 });
+            break;
+        }
+      },
     });
 
     // Reset state
@@ -789,6 +982,9 @@ export class Game {
     this.hasUsedRevive = false;
     this.dashCount = 0;
     this.hookAttachedFrames = 0;
+    this.runSparks = 0;
+    this.nextMilestone = 100;
+    this.slowLavaFrames = 0;
     this.ghostRecording = [];
     this.ghostPlayback =
       mode === GameMode.EndlessClimb || mode === GameMode.DailyChallenge
@@ -869,6 +1065,8 @@ export class Game {
         grappleable: true,
         lethal: false,
         bouncy: false,
+        pickup: false,
+        collected: false,
         unstableTimer: 0,
         unstableTriggered: false,
         amp: 0,
@@ -890,6 +1088,8 @@ export class Game {
           grappleable: false,
           lethal: true,
           bouncy: false,
+          pickup: false,
+          collected: false,
           unstableTimer: 0,
           unstableTriggered: false,
           amp: 0,
@@ -1001,12 +1201,20 @@ export class Game {
       });
       const myIdx = sorted.findIndex((p) => p.id === 'player');
       raceResult = { position: myIdx + 1, total: sorted.length };
-      if (myIdx === 0) {
+      // "Beat <bot>" unlocks when the player finishes ahead of that bot individually.
+      const sparkyIdx = sorted.findIndex((p) => p.id === 'sparky');
+      const phaseIdx = sorted.findIndex((p) => p.id === 'phase');
+      const apexIdx = sorted.findIndex((p) => p.id === 'apex');
+      if (sparkyIdx > myIdx) this.achievements.unlock('bot-sparky', this.notifyUnlock);
+      if (phaseIdx > myIdx) this.achievements.unlock('bot-phase', this.notifyUnlock);
+      if (apexIdx > myIdx) this.achievements.unlock('bot-apex', this.notifyUnlock);
+      // Track wins per bot defeated for stats.
+      if (sparkyIdx > myIdx)
         this.save.data.botRaceWins['sparky'] = (this.save.data.botRaceWins['sparky'] ?? 0) + 1;
-        this.achievements.unlock('bot-sparky', this.notifyUnlock);
-        if (this.bots[1] && sorted[1]?.id === 'phase') this.achievements.unlock('bot-phase', this.notifyUnlock);
-        if (sorted[1]?.id === 'apex') this.achievements.unlock('bot-apex', this.notifyUnlock);
-      }
+      if (phaseIdx > myIdx)
+        this.save.data.botRaceWins['phase'] = (this.save.data.botRaceWins['phase'] ?? 0) + 1;
+      if (apexIdx > myIdx)
+        this.save.data.botRaceWins['apex'] = (this.save.data.botRaceWins['apex'] ?? 0) + 1;
     }
 
     if (this.mode === GameMode.ComboRun) {
@@ -1038,6 +1246,11 @@ export class Game {
       dailyFirstRun: this.mode === GameMode.DailyChallenge && this.dailyRankedThisAttempt,
       completionBonus: this.mode === GameMode.TimeAttack && !this.player.dead,
     });
+    // Add Sparks collected mid-run (pickups + milestone bonuses) on top of the run rewards.
+    if (this.runSparks > 0) {
+      this.save.data.sparks += this.runSparks;
+      rewards.sparks += this.runSparks;
+    }
     this.save.save();
     this.save.flush();
 
