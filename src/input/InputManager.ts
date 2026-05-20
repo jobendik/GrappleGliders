@@ -39,6 +39,8 @@ export class InputManager {
   // For tap-toggle mode
   private toggleActive = false;
   private lastTapTime = 0;
+  /** Soft steering applied by on-screen left/right buttons. -1, 0, or 1. */
+  private softSteer = 0;
 
   constructor(element: HTMLElement) {
     this.element = element;
@@ -226,10 +228,17 @@ export class InputManager {
     this.setPointerDown(down);
   }
 
+  /** Soft steering applied by on-screen left/right buttons (mobile). */
+  setSoftSteer(value: -1 | 0 | 1): void {
+    this.softSteer = value;
+  }
+
   snapshot(): InputSnapshot {
     let move = 0;
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) move -= 1;
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) move += 1;
+    // Soft steering overrides keyboard when pressed.
+    if (move === 0 && this.softSteer !== 0) move = this.softSteer;
     let reel: -1 | 0 | 1 = 0;
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) reel = -1;
     else if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) reel = 1;

@@ -1,14 +1,22 @@
 import { utcDateKey } from '../utils/format';
 
 export interface SaveSettings {
+  /** Master SFX enabled toggle. */
   sound: boolean;
+  /** Master music enabled toggle. */
   music: boolean;
+  /** 0..1 — SFX bus volume. */
+  sfxVolume: number;
+  /** 0..1 — music bus volume. */
+  musicVolume: number;
   haptics: boolean;
   tutorialSeen: boolean;
   showGhost: boolean;
   reducedMotion: boolean;
   quality: 'auto' | 'high' | 'low';
   tapToggle: boolean;
+  /** Show on-screen left/right arrows on mobile in addition to the dash button. */
+  mobileSteering: boolean;
 }
 
 export interface DailyHistoryEntry {
@@ -24,6 +32,17 @@ export interface AchievementProgress {
   unlocked: boolean;
   unlockedAt?: number;
   progress?: number;
+}
+
+/** A real human player's submitted score, used by the cross-session leaderboard. */
+export interface LeaderboardSubmission {
+  /** YYYY-MM-DD UTC date of the daily challenge this score was set against. */
+  date: string;
+  seed: number;
+  name: string;
+  score: number;
+  altitude: number;
+  timestamp: number;
 }
 
 export interface SaveData {
@@ -52,6 +71,12 @@ export interface SaveData {
   personalBestGhost: number[] | null;
   botRaceWins: Record<string, number>;
   timeAttackMedals: Record<string, 'none' | 'bronze' | 'silver' | 'gold'>;
+  /** Display name for leaderboards. Empty string until the player picks one or CrazyGames SDK provides one. */
+  playerName: string;
+  /** True once the player has either set a name or accepted the default. Suppresses repeat prompts. */
+  playerNameSet: boolean;
+  /** Persistent local leaderboard submissions keyed by daily date. Kept small (per-day cap of 50). */
+  leaderboardSubmissions: LeaderboardSubmission[];
 }
 
 const SAVE_KEY = 'grapple-gliders.v1.save';
@@ -60,12 +85,15 @@ const SAVE_VERSION = 1;
 const defaultSettings: SaveSettings = {
   sound: true,
   music: true,
+  sfxVolume: 0.9,
+  musicVolume: 0.5,
   haptics: true,
   tutorialSeen: false,
   showGhost: true,
   reducedMotion: false,
   quality: 'auto',
   tapToggle: false,
+  mobileSteering: true,
 };
 
 export const defaultSave = (): SaveData => ({
@@ -93,6 +121,9 @@ export const defaultSave = (): SaveData => ({
   personalBestGhost: null,
   botRaceWins: {},
   timeAttackMedals: {},
+  playerName: '',
+  playerNameSet: false,
+  leaderboardSubmissions: [],
 });
 
 type CloudAdapter = {
@@ -185,6 +216,28 @@ export class SaveSystem {
       merged.unlockedHooks = Array.from(new Set([...merged.unlockedHooks, ...this.data.unlockedHooks]));
       merged.unlockedTrails = Array.from(new Set([...merged.unlockedTrails, ...this.data.unlockedTrails]));
       merged.unlockedThemes = Array.from(new Set([...merged.unlockedThemes, ...this.data.unlockedThemes]));
+      // Player name: cloud wins if local hasn't been explicitly set.
+      if (!this.data.playerNameSet && merged.playerNameSet) {
+        // already from cloud
+      } else if (this.data.playerNameSet && !merged.playerNameSet) {
+        merged.playerName = this.data.playerName;
+        merged.playerNameSet = true;
+      }
+      // Leaderboard submissions: union by timestamp+name, keep newest 200.
+      const allSubmissions = [
+        ...merged.leaderboardSubmissions,
+        ...this.data.leaderboardSubmissions,
+      ];
+      const seen = new Set<string>();
+      merged.leaderboardSubmissions = allSubmissions
+        .filter((s) => {
+          const key = `${s.date}|${s.name}|${s.score}|${s.timestamp}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .slice(0, 200);
       this.data = merged;
       this.onCloudSync?.();
       this.save();

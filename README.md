@@ -12,7 +12,7 @@ Built as a single-page TypeScript + Vite + Canvas 2D experience. No frameworks, 
 | ------ | ------- | ------ |
 | Fire & hold grapple | Hold left mouse | Tap and hold |
 | Release fling | Release left mouse | Lift finger |
-| Steer in air | `A` / `D` or arrows | Tilt with extra finger taps |
+| Steer in air | `A` / `D` or arrows | On-screen ◀ / ▶ buttons (toggle in Settings) |
 | Reel rope in / out | `W` / `S` | Hold finger longer to reel in |
 | Dash | `Space` or right-click | On-screen DASH button or two-finger swipe down |
 | Pause | `P` or `Esc` | Top-right pause icon |

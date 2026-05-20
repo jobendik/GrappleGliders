@@ -2,6 +2,16 @@ import { GameMode } from '../game/GameState';
 import { formatAltitude, formatScore, formatTime } from '../utils/format';
 import type { RunRewards } from '../systems/ProgressionSystem';
 
+export interface RacePodiumEntry {
+  position: number;
+  name: string;
+  color: string;
+  altitude: number;
+  isYou: boolean;
+  finished: boolean;
+  finishTime: number | null;
+}
+
 export interface GameOverContext {
   mode: GameMode;
   cause: string;
@@ -16,7 +26,12 @@ export interface GameOverContext {
   elapsedSeconds: number;
   rewards: RunRewards;
   raceResult?: { position: number; total: number };
+  racePodium?: RacePodiumEntry[];
   canRevive: boolean;
+  /** Whether the CrazyGames SDK is available — gates rewarded-ad buttons. */
+  adsAvailable: boolean;
+  /** Current daily-login streak in days. */
+  dailyStreak: number;
 }
 
 export interface GameOverCallbacks {
@@ -47,10 +62,15 @@ export class GameOverScreen {
     });
     const modal = document.createElement('div');
     modal.className = 'modal';
+    const showRevive = ctx.canRevive && ctx.adsAvailable;
+    const show2x = ctx.adsAvailable;
+    const streakNudge = this.streakNudge(ctx.dailyStreak);
+    const podiumHtml = ctx.racePodium ? this.renderPodium(ctx.racePodium) : '';
     modal.innerHTML = `
       <div class="modal-content">
         <h1 class="title gradient-text">Run Ended</h1>
         <p class="subtitle">${ctx.cause}</p>
+        ${podiumHtml}
         <div class="stat-grid">
           <div class="stat"><span class="label">Score</span><div class="value">${formatScore(ctx.score)}</div></div>
           <div class="stat"><span class="label">Altitude</span><div class="value">${formatAltitude(ctx.altitude)}</div></div>
@@ -66,12 +86,13 @@ export class GameOverScreen {
           ${ctx.newBestAltitude ? '<div class="stat"><span class="label">New</span><div class="value">Best altitude!</div></div>' : ''}
           ${ctx.newBestScore ? '<div class="stat"><span class="label">New</span><div class="value">Best score!</div></div>' : ''}
           ${ctx.newBestTime ? '<div class="stat"><span class="label">New</span><div class="value">Best time!</div></div>' : ''}
-          ${ctx.raceResult ? `<div class="stat"><span class="label">Race</span><div class="value">${ctx.raceResult.position} of ${ctx.raceResult.total}</div></div>` : ''}
+          ${ctx.raceResult && !ctx.racePodium ? `<div class="stat"><span class="label">Race</span><div class="value">${ctx.raceResult.position} of ${ctx.raceResult.total}</div></div>` : ''}
         </div>
+        ${streakNudge}
         <div class="actions">
-          ${ctx.canRevive ? '<button class="primary" data-el="revive">Revive (watch ad)</button>' : ''}
+          ${showRevive ? '<button class="primary" data-el="revive">Revive (watch ad)</button>' : ''}
           <button class="primary" data-el="retry">Retry</button>
-          <button class="ghost" data-el="x2">Double Sparks (watch ad)</button>
+          ${show2x ? '<button class="ghost" data-el="x2">Double Sparks (watch ad)</button>' : ''}
           <button class="ghost" data-el="menu">Main Menu</button>
         </div>
         <p class="subtitle" style="font-size:11px;margin-top:14px;color:rgba(234,255,255,0.45);text-align:center">Tap anywhere outside this card to retry instantly.</p>
@@ -93,7 +114,50 @@ export class GameOverScreen {
       this.close();
       cb.onRevive();
     });
-    modal.querySelector('[data-el="x2"]')!.addEventListener('click', cb.onWatch2xAd);
+    modal.querySelector('[data-el="x2"]')?.addEventListener('click', cb.onWatch2xAd);
+  }
+
+  private renderPodium(podium: RacePodiumEntry[]): string {
+    const top3 = podium.slice(0, 3);
+    if (top3.length === 0) return '';
+    // Render center=1st, left=2nd, right=3rd for a classic podium silhouette.
+    const slots = [
+      { idx: 1, label: '2nd', heightClass: 'h-2nd' },
+      { idx: 0, label: '1st', heightClass: 'h-1st' },
+      { idx: 2, label: '3rd', heightClass: 'h-3rd' },
+    ];
+    const items = slots
+      .map((slot) => {
+        const entry = top3[slot.idx];
+        if (!entry) return `<div class="podium-slot ${slot.heightClass} empty"></div>`;
+        const time = entry.finishTime !== null ? `${entry.finishTime.toFixed(2)}s` : `${Math.floor(entry.altitude)}m`;
+        return `
+          <div class="podium-slot ${slot.heightClass} ${entry.isYou ? 'you' : ''}" style="--podium-color:${entry.color}">
+            <div class="podium-rank">${slot.label}</div>
+            <div class="podium-name">${this.escapeHtml(entry.name)}${entry.isYou ? ' <em>(You)</em>' : ''}</div>
+            <div class="podium-stat">${time}</div>
+            <div class="podium-pillar"></div>
+          </div>
+        `;
+      })
+      .join('');
+    return `<div class="race-podium">${items}</div>`;
+  }
+
+  private streakNudge(streak: number): string {
+    if (streak <= 0) {
+      return '';
+    }
+    if (streak === 1) {
+      return `<div class="streak-nudge">🔥 Streak started — come back tomorrow to keep the fire alive.</div>`;
+    }
+    return `<div class="streak-nudge">🔥 ${streak}-day streak — play tomorrow to extend it.</div>`;
+  }
+
+  private escapeHtml(s: string): string {
+    return s.replace(/[&<>"']/g, (c) =>
+      c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
+    );
   }
 
   close(): void {

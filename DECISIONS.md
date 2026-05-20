@@ -22,9 +22,11 @@ The Web Audio API is sufficient for the game's synthwave palette: short blip env
 
 The prototype bolted touch onto a mouse-first design. The production input layer (`src/input/InputManager.ts`) treats the first touch as the canonical pointer and surfaces hold/release events identically across mouse and touch. An optional "tap-toggle" mode in Settings lets one-finger players play without holding.
 
-## 6. Faux leaderboard until a backend lands
+## 6. Backend-pluggable leaderboard with persistent local submissions
 
-CrazyGames v3 does not expose a global leaderboard primitive. The daily leaderboard is generated via `LeaderboardSystem.generateDaily(seed, playerScore)` — a deterministic procedural ladder seeded from the daily seed plus the player's score, with believable bot names. The UI is transparent about this on the leaderboard screen. Swap in a real backend by replacing the body of `LeaderboardSystem.generateDaily`.
+CrazyGames v3 does not expose a global leaderboard primitive. `LeaderboardSystem` is now built around a `LeaderboardBackend` interface (`fetchDaily`, `submitDaily`) so a real service (Supabase/Firebase/own API) can be wired in without touching call sites. The default `LocalLeaderboardBackend` persists every ranked daily attempt to `SaveData.leaderboardSubmissions`, which the SaveSystem already mirrors to the CrazyGames cloud — that gives the player a real cross-device history even with no third party. `buildDailyBoard` blends those real entries with a deterministic seeded bot ladder to fill out the table to 100, marking each row as `isBot` so the UI can label them. The daily-screen disclaimer tells the player exactly what they're looking at.
+
+To wire a real global backend later: implement `LeaderboardBackend` against the service of choice and call `leaderboardSys.setBackend(...)` after init.
 
 ## 7. Ghost replay as a 5-number stride array
 
@@ -57,3 +59,15 @@ ESLint 9 removed `.eslintrc.json` support. The project uses `eslint.config.js` (
 ## 14. No PWA / service worker
 
 Earlier revisions wired up an opt-in "Install PWA" button in Settings, but the service-worker file was never shipped and the registration always failed. CrazyGames also forbids service workers inside their iframe host, which is the primary deploy target. The button and `src/platform/PWA.ts` were removed; if a PWA is ever needed for a self-hosted variant, ship a real `public/sw.js` and re-register from outside the CrazyGames iframe (`window.top === window.self`).
+
+## 15. Player identity sourced from the CrazyGames SDK first, fallback to a local prompt
+
+The leaderboard and Bot Race used to show every player as "YOU". `CrazyGamesPlatform.getUsername()` is called once during boot — if the SDK's account API resolves a username, that's used and saved (with the `playerNameSet` flag set so we don't re-prompt). Otherwise, the main menu surfaces a yellow "Set your name →" badge, the Settings screen exposes a name field, and `NamePromptScreen` is a focused first-launch modal. All three paths funnel through `Game.setPlayerName(raw)` which strips non-letter/digit/dash/underscore/dot/space characters and caps at 16 chars.
+
+## 16. Interactive tutorial with action gates
+
+The four-message timed tutorial was rebuilt around a step machine that advances only when the player performs the action the step is teaching: `hookConnect`, `hookRelease`, `dash`, then a final altitude gate. Each step also has a fallback timeout so anyone genuinely stuck still progresses. The dash step adds a `.tutorial-highlight` ring around the on-screen DASH button so mobile players can see what to press. Tutorial events are wired through `Tutorial.notify(action, payload?)` from `Player.onHookConnect`, `onHookRelease`, `onDash` and the per-tick altitude update.
+
+## 17. Time Attack uses a hand-crafted course
+
+`buildTimeAttackLayout()` no longer projects a sine wave with periodic energy nodes. The course is now a hand-tuned route divided into four narrative acts (tutorial corridor → pendulum bowls → S-bend gauntlet → final ascent), with energy nodes placed to reward specific swing arcs, spike clusters at risk pinch points, and three medal pickups (shield, slow lava, sparks) scattered to break up the climb. Layout is data-only — to retune the course, edit the `route` array at the top of the function.
