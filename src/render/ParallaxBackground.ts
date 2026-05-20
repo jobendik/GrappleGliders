@@ -55,6 +55,19 @@ interface Satellite {
   ttl: number;
 }
 
+interface EnergyRibbon {
+  /** Screen-space anchor (0..1). */
+  uy: number;
+  /** Color tint (0=accent, 1=horizon). */
+  tint: number;
+  /** Speed of flow scroll. */
+  speed: number;
+  /** Phase offset. */
+  phase: number;
+  /** Amplitude of vertical wave. */
+  amp: number;
+}
+
 export class ParallaxBackground {
   private stars: Star[] = [];
   private cityFar: CityBuilding[] = [];
@@ -65,6 +78,17 @@ export class ParallaxBackground {
   private fogClouds: FogCloud[] = [];
   private satellites: Satellite[] = [];
   private satelliteCooldown = 900;
+  /** Lightning flash strength 0..1, decays each frame. */
+  private lightningFlash = 0;
+  /** Frames until next lightning attempt. */
+  private lightningCooldown = 600;
+  /** Lightning bolt path points (when active). */
+  private lightningBolt: { x: number; y: number }[] = [];
+  private lightningBoltTtl = 0;
+  /** Energy ribbons that flow across the sky at high altitudes. */
+  private energyRibbons: EnergyRibbon[] = [];
+  /** Combo-driven aurora intensity multiplier 0..1. */
+  comboBoost = 0;
 
   init(width: number, height: number): void {
     this.stars.length = 0;
@@ -103,14 +127,29 @@ export class ParallaxBackground {
     this.shootingStarCooldown = 220;
     this.satellites = [];
     this.satelliteCooldown = 900;
+    this.energyRibbons = Array.from({ length: 3 }, () => ({
+      uy: 0.15 + this.rng.next() * 0.35,
+      tint: this.rng.next(),
+      speed: 0.002 + this.rng.next() * 0.003,
+      phase: this.rng.next() * Math.PI * 2,
+      amp: 18 + this.rng.next() * 14,
+    }));
+    this.lightningFlash = 0;
+    this.lightningCooldown = 480 + this.rng.next() * 480;
+    this.lightningBolt = [];
+    this.lightningBoltTtl = 0;
+    this.comboBoost = 0;
   }
 
   draw(renderer: Renderer, camera: Camera, theme: ThemeDef, time: number, lowQuality: boolean): void {
     const ctx = renderer.ctx;
     const w = renderer.cssWidth;
     const h = renderer.cssHeight;
+    // Altitude factor 0..1: 0 at ground, 1 near 3000m+. Camera y is negative
+    // when up. Drives sky deepening, planet visibility, ribbons.
+    const altitude = Math.max(0, Math.min(1, -camera.position.y / 30000));
 
-    this.drawSky(ctx, w, h, theme, time);
+    this.drawSky(ctx, w, h, theme, time, altitude);
     if (lowQuality) {
       this.drawStarsSimple(ctx, w, h, camera, theme);
       this.drawCityFar(ctx, w, h, camera, theme, true);
@@ -121,10 +160,13 @@ export class ParallaxBackground {
 
     this.drawAurora(ctx, w, h, theme, time);
     this.drawNebula(ctx, w, h, theme, time);
+    this.drawDistantPlanet(ctx, w, h, theme, time, altitude);
     this.drawMoon(ctx, w, h, theme, time);
     this.drawStars(ctx, w, h, camera, theme, time);
     this.updateAndDrawShootingStars(ctx, w, h);
     this.updateAndDrawSatellites(ctx, w, h);
+    this.drawEnergyRibbons(ctx, w, h, theme, time, altitude);
+    this.updateAndDrawLightning(ctx, w, h, theme, altitude);
     this.drawFogClouds(ctx, w, h, theme, time);
     this.drawCityFar(ctx, w, h, camera, theme, false);
     this.drawHorizonGlow(ctx, w, h, theme, time);
@@ -133,7 +175,14 @@ export class ParallaxBackground {
     this.drawGrid(ctx, w, h, camera, theme, time, false);
   }
 
-  private drawSky(ctx: CanvasRenderingContext2D, w: number, h: number, theme: ThemeDef, _time: number): void {
+  private drawSky(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    theme: ThemeDef,
+    _time: number,
+    altitude: number,
+  ): void {
     // Vertical sky gradient with an extra subtle radial vignette baked in for
     // depth. The gradient is computed once per frame; the radial pass is light.
     const grad = ctx.createLinearGradient(0, 0, 0, h);
@@ -142,6 +191,22 @@ export class ParallaxBackground {
     grad.addColorStop(1, theme.skyBottom);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
+
+    // Altitude-driven deepening: as we climb, the sky goes blacker and more
+    // cosmic. Subtle but sells the sense of altitude.
+    if (altitude > 0.05) {
+      ctx.fillStyle = `rgba(0,0,0,${altitude * 0.45})`;
+      ctx.fillRect(0, 0, w, h * 0.7);
+    }
+
+    // Lightning flash brightens the whole sky briefly.
+    if (this.lightningFlash > 0.01) {
+      const a = this.lightningFlash * 0.55;
+      ctx.fillStyle = `rgba(${this.themeRgbAccent(theme).join(',')},${a})`;
+      ctx.globalCompositeOperation = 'screen';
+      ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = 'source-over';
+    }
 
     // Soft radial darkening from edges in — pushes attention to the center.
     const vignette = ctx.createRadialGradient(
@@ -158,19 +223,29 @@ export class ParallaxBackground {
     ctx.fillRect(0, 0, w, h);
   }
 
+  private themeRgbAccent(theme: ThemeDef): [number, number, number] {
+    // Extract RGB from theme.accent hex.
+    const h = theme.accent.replace('#', '');
+    const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+    const n = parseInt(full, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
   /**
    * Drifting aurora ribbons: 3 layered sin-band fills painted with
    * additive blending. Produces shimmering vertical light columns above the
    * horizon line — feels expensive, costs ~20 fillRects.
+   * Intensity scales with current combo so a sustained chain lights up the sky.
    */
   private drawAurora(ctx: CanvasRenderingContext2D, w: number, h: number, theme: ThemeDef, time: number): void {
     const horizonY = h * 0.74;
+    const boost = 1 + this.comboBoost * 1.8;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     const layers = [
-      { color: theme.accent, base: 0.55, freq: 0.0015, amp: 14, alpha: 0.12 },
-      { color: theme.horizon, base: 0.62, freq: 0.0019, amp: 18, alpha: 0.10 },
-      { color: theme.accent, base: 0.50, freq: 0.0011, amp: 10, alpha: 0.08 },
+      { color: theme.accent, base: 0.55, freq: 0.0015, amp: 14, alpha: 0.12 * boost },
+      { color: theme.horizon, base: 0.62, freq: 0.0019, amp: 18, alpha: 0.10 * boost },
+      { color: theme.accent, base: 0.50, freq: 0.0011, amp: 10, alpha: 0.08 * boost },
     ];
     for (const layer of layers) {
       const bandH = h * 0.4;
@@ -482,6 +557,173 @@ export class ParallaxBackground {
       ctx.fill();
     }
     ctx.restore();
+  }
+
+  /**
+   * Distant rotating planet that fades in as the player climbs higher. Adds
+   * "you're in space" payoff at high altitude.
+   */
+  private drawDistantPlanet(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    theme: ThemeDef,
+    time: number,
+    altitude: number,
+  ): void {
+    if (altitude < 0.08) return;
+    const visibility = Math.min(1, (altitude - 0.08) * 2.5);
+    const cx = w * 0.18;
+    const cy = h * 0.22;
+    const r = Math.min(w, h) * 0.08;
+    ctx.save();
+    ctx.globalAlpha = visibility;
+    // Outer glow ring
+    ctx.globalCompositeOperation = 'screen';
+    const halo = ctx.createRadialGradient(cx, cy, r * 0.5, cx, cy, r * 2.2);
+    halo.addColorStop(0, hexToRgba(theme.accent, 0.25));
+    halo.addColorStop(0.5, hexToRgba(theme.accent, 0.08));
+    halo.addColorStop(1, hexToRgba(theme.accent, 0));
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+    // Planet body — gradient with terminator (light/shadow side).
+    const disc = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, 0, cx, cy, r);
+    disc.addColorStop(0, lighten(theme.accent, 0.4));
+    disc.addColorStop(0.45, theme.accent);
+    disc.addColorStop(0.85, darken(theme.accent, 0.45));
+    disc.addColorStop(1, '#04040a');
+    ctx.fillStyle = disc;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    // Faint orbital ring rotating
+    ctx.strokeStyle = hexToRgba(theme.accent, 0.32);
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, r * 1.45, r * 0.45, time * 0.005, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /**
+   * Energy ribbons flowing horizontally across the sky at high altitudes —
+   * adds dynamism and signals the world has more layers above.
+   */
+  private drawEnergyRibbons(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    theme: ThemeDef,
+    time: number,
+    altitude: number,
+  ): void {
+    const visibility = Math.min(1, altitude * 1.8);
+    if (visibility < 0.05) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    for (const r of this.energyRibbons) {
+      const baseY = r.uy * h;
+      const color = r.tint < 0.5 ? theme.accent : theme.horizon;
+      // Draw the ribbon as a series of horizontal segments following a sine wave.
+      const segments = 18;
+      ctx.beginPath();
+      for (let i = 0; i <= segments; i++) {
+        const x = (i / segments) * w;
+        const y = baseY + Math.sin(time * r.speed + r.phase + i * 0.6) * r.amp;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = hexToRgba(color, 0.35 * visibility);
+      ctx.lineWidth = 6;
+      ctx.stroke();
+      // Bright thin core
+      ctx.strokeStyle = hexToRgba(color, 0.85 * visibility);
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      // Flowing pulse bead along the ribbon
+      const beadT = (time * 0.012 + r.phase * 0.16) % 1;
+      const beadX = beadT * w;
+      const beadY = baseY + Math.sin(time * r.speed + r.phase + (beadT * segments) * 0.6) * r.amp;
+      const bead = ctx.createRadialGradient(beadX, beadY, 0, beadX, beadY, 8);
+      bead.addColorStop(0, '#ffffff');
+      bead.addColorStop(0.5, hexToRgba(color, 0.7 * visibility));
+      bead.addColorStop(1, hexToRgba(color, 0));
+      ctx.fillStyle = bead;
+      ctx.beginPath();
+      ctx.arc(beadX, beadY, 8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /**
+   * Occasional dramatic lightning bolt in the upper sky. Frequency ramps up
+   * with altitude. Produces a brief full-sky white flash plus a jagged bolt.
+   */
+  private updateAndDrawLightning(
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    theme: ThemeDef,
+    altitude: number,
+  ): void {
+    // Decay current flash.
+    if (this.lightningFlash > 0) {
+      this.lightningFlash = Math.max(0, this.lightningFlash - 0.04);
+    }
+    if (this.lightningBoltTtl > 0) {
+      this.lightningBoltTtl -= 1;
+    }
+
+    // Spawn a new bolt occasionally — rarer at low altitude.
+    this.lightningCooldown -= 1;
+    if (this.lightningCooldown <= 0) {
+      const rate = 0.3 + altitude * 0.7;
+      if (this.rng.next() < rate) {
+        this.lightningFlash = 0.85;
+        this.lightningBoltTtl = 14;
+        // Build a jagged bolt path.
+        const startX = this.rng.range(w * 0.15, w * 0.85);
+        const segments = 8;
+        const totalLen = h * 0.55;
+        this.lightningBolt = [];
+        let x = startX;
+        let y = 0;
+        for (let i = 0; i <= segments; i++) {
+          this.lightningBolt.push({ x, y });
+          const stepY = totalLen / segments;
+          const jitter = (this.rng.next() - 0.5) * 60;
+          x += jitter;
+          y += stepY;
+        }
+      }
+      this.lightningCooldown = 280 + this.rng.next() * 540;
+    }
+
+    // Draw the bolt while alive.
+    if (this.lightningBoltTtl > 0 && this.lightningBolt.length >= 2) {
+      const t = this.lightningBoltTtl / 14;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      // Outer glow stroke
+      ctx.beginPath();
+      ctx.moveTo(this.lightningBolt[0]!.x, this.lightningBolt[0]!.y);
+      for (let i = 1; i < this.lightningBolt.length; i++) {
+        ctx.lineTo(this.lightningBolt[i]!.x, this.lightningBolt[i]!.y);
+      }
+      ctx.strokeStyle = hexToRgba(theme.horizon, 0.55 * t);
+      ctx.lineWidth = 8;
+      ctx.lineCap = 'round';
+      ctx.stroke();
+      // Bright inner core
+      ctx.strokeStyle = `rgba(255,255,255,${0.9 * t})`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   private drawHorizonGlow(ctx: CanvasRenderingContext2D, w: number, h: number, theme: ThemeDef, time: number): void {

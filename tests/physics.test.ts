@@ -30,6 +30,8 @@ const makeObstacle = (overrides: Partial<Obstacle>): Obstacle => ({
   driftSpeed: 0,
   lastX: 0,
   pulse: 0,
+  variant: 0,
+  seedPhase: 0,
   ...overrides,
 });
 

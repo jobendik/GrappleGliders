@@ -34,10 +34,19 @@ export interface Obstacle extends Rect {
   pickup: boolean;
   /** True once collected; cleared from world next update. */
   collected: boolean;
+  /**
+   * Visual style index 0..2 — used by the renderer to pick between platform
+   * variants (classic / circuit / hover). Gameplay-irrelevant. Default 0.
+   */
+  variant: number;
+  /** Deterministic phase offset for per-obstacle animation (0..2π). */
+  seedPhase: number;
 }
 
 export const OBSTACLE_COLORS: Record<ObstacleKind, string> = {
-  platform: '#00f3ff',
+  // Platforms are deep violet so the cyan default ship pops against them.
+  // The renderer adds cyan edge highlights from the theme accent.
+  platform: '#5b35e6',
   energy: '#a45cff',
   unstable: '#ff9d2e',
   bouncy: '#00ff8a',
@@ -71,6 +80,9 @@ let nextObstacleId = 1;
 const createObstacle = (partial: Partial<Obstacle> & Pick<Obstacle, 'x' | 'y' | 'width' | 'height' | 'kind'>): Obstacle => {
   const kind = partial.kind;
   const pickup = isPickup(kind);
+  // Cheap pseudo-random variant + phase from position so the layout is
+  // deterministic per seed but each obstacle still looks unique.
+  const hash = Math.floor(Math.abs(partial.x * 7.13 + partial.y * 3.71 + nextObstacleId * 0.91));
   return {
     id: nextObstacleId++,
     color: OBSTACLE_COLORS[kind],
@@ -86,6 +98,8 @@ const createObstacle = (partial: Partial<Obstacle> & Pick<Obstacle, 'x' | 'y' | 
     driftSpeed: 0,
     lastX: partial.x,
     pulse: 0,
+    variant: hash % 3,
+    seedPhase: (hash % 628) / 100,
     ...partial,
   };
 };

@@ -39,6 +39,8 @@ const makePlatform = (x: number, y: number, width = 100): Obstacle => ({
   driftSpeed: 0,
   lastX: x - width / 2,
   pulse: 0,
+  variant: 0,
+  seedPhase: 0,
 });
 
 describe('Bot AI', () => {
