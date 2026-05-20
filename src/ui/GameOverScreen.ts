@@ -39,6 +39,7 @@ export interface GameOverCallbacks {
   onRevive(): void;
   onMenu(): void;
   onWatch2xAd(): void;
+  onShare(): void;
 }
 
 export class GameOverScreen {
@@ -92,6 +93,7 @@ export class GameOverScreen {
         <div class="actions">
           ${showRevive ? '<button class="primary" data-el="revive">Revive (watch ad)</button>' : ''}
           <button class="primary" data-el="retry">Retry</button>
+          <button class="ghost" data-el="share">Share Run</button>
           ${show2x ? '<button class="ghost" data-el="x2">Double Sparks (watch ad)</button>' : ''}
           <button class="ghost" data-el="menu">Main Menu</button>
         </div>
@@ -115,6 +117,10 @@ export class GameOverScreen {
       cb.onRevive();
     });
     modal.querySelector('[data-el="x2"]')?.addEventListener('click', cb.onWatch2xAd);
+    modal.querySelector('[data-el="share"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cb.onShare();
+    });
   }
 
   private renderPodium(podium: RacePodiumEntry[]): string {

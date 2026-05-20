@@ -49,9 +49,9 @@ export const MODES: Record<GameMode, ModeMeta> = {
   [GameMode.TimeAttack]: {
     id: GameMode.TimeAttack,
     name: 'Time Attack',
-    tagline: 'Curated course, race to altitude 5000m',
-    description: 'A fixed layout. Three medal tiers. Beat the clock.',
-    goal: 'Reach altitude 5000m as fast as possible.',
+    tagline: 'Four hand-crafted courses. Three medal tiers. Beat the clock.',
+    description: 'Pick a course — Rookie, The Spire, Pendulum, or Inferno — and chase gold.',
+    goal: 'Earn gold on every course.',
     iconColor: '#00ff8a',
   },
   [GameMode.ComboRun]: {

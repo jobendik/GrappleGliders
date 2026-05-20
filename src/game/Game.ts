@@ -45,18 +45,28 @@ import { DailyChallengeScreen } from '../ui/DailyChallengeScreen';
 import { Tutorial } from '../ui/Tutorial';
 import { ToastManager } from '../ui/Toast';
 import { NamePromptScreen } from '../ui/NamePromptScreen';
+import { ShareScreen } from '../ui/ShareScreen';
+import type { ShareCardData } from '../ui/ShareCard';
+import { TimeAttackSelectScreen } from '../ui/TimeAttackSelectScreen';
 
 import { getSkin } from '../content/skins';
 import { getHook } from '../content/hooks';
 import { getTrail } from '../content/trails';
+import {
+  TIME_ATTACK_COURSES,
+  buildCourseLayout,
+  type TimeAttackCourse,
+} from '../content/timeAttackCourses';
 import { clamp } from '../utils/math';
 import { withAlpha as withAlphaColor, mix as mixColor, lighten } from '../utils/color';
 import { utcDateKey } from '../utils/format';
 
 const WORLD_WIDTH = 1200;
-const TIME_ATTACK_TARGET_ALT = 5000;
 const BOT_RACE_TARGET_ALT = 3000;
 const COMBO_RUN_SECONDS = 60;
+
+/** Save-data sub-key for per-course Time Attack records. */
+const timeAttackKey = (courseId: string): string => `${GameMode.TimeAttack}:${courseId}`;
 
 interface GhostFrame {
   px: number;
@@ -70,8 +80,6 @@ interface TimeAttackResult {
   best: number;
   medal: 'gold' | 'silver' | 'bronze' | 'none';
 }
-
-const TIME_ATTACK_MEDALS = { gold: 80, silver: 110, bronze: 150 } as const;
 
 interface RaceParticipant {
   id: 'player' | 'sparky' | 'phase' | 'apex';
@@ -116,7 +124,11 @@ export class Game {
   settingsScreen: SettingsScreen;
   dailyScreen: DailyChallengeScreen;
   namePrompt: NamePromptScreen;
+  shareScreen: ShareScreen;
+  timeAttackSelect: TimeAttackSelectScreen;
   tutorial: Tutorial | null = null;
+  /** Most recent daily rank (1-based) — surfaced on the share card. */
+  private lastDailyRank: number | null = null;
 
   state: GameState = GameState.Boot;
   mode: GameMode = GameMode.EndlessClimb;
@@ -166,6 +178,8 @@ export class Game {
   private hookAttachedFrames = 0;
   /** Single-attempt-per-day gating for daily challenge ranked. */
   private dailyRankedThisAttempt = false;
+  /** Active Time Attack course for the current/most-recent run. */
+  private activeTimeAttackCourse: TimeAttackCourse = TIME_ATTACK_COURSES[0]!;
   /** Sparks collected during the current run (mid-run rewards). */
   private runSparks = 0;
   /** Highest milestone celebrated this run (rounded down to nearest 250 then 500). */
@@ -210,6 +224,8 @@ export class Game {
     this.settingsScreen = new SettingsScreen(this.overlayRoot);
     this.dailyScreen = new DailyChallengeScreen(this.overlayRoot);
     this.namePrompt = new NamePromptScreen(this.overlayRoot);
+    this.shareScreen = new ShareScreen(this.overlayRoot);
+    this.timeAttackSelect = new TimeAttackSelectScreen(this.overlayRoot);
 
     this.themes.setTheme(this.save.data.equippedTheme);
     this.background.init(this.renderer.cssWidth, this.renderer.cssHeight);
@@ -223,6 +239,9 @@ export class Game {
       this.audio.setVolume('sfx', this.save.data.settings.sfxVolume);
       this.audio.setEnabled('sfx', this.save.data.settings.sound);
       this.audio.setEnabled('music', this.save.data.settings.music);
+      // Warm up MP3 buffers in the background so the first hook fire and the
+      // first music swap don't stall on decode.
+      this.audio.assets.preload(['sfx:whip', 'music:above-the-steel']);
       if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
     });
 
@@ -388,7 +407,7 @@ export class Game {
       }
     } else if (this.mode === GameMode.TimeAttack) {
       this.modeElapsed = this.elapsedSeconds;
-      if (this.player.maxAltitude >= TIME_ATTACK_TARGET_ALT) {
+      if (this.player.maxAltitude >= this.activeTimeAttackCourse.targetAltitude) {
         this.completeTimeAttack();
         return;
       }
@@ -1759,7 +1778,7 @@ export class Game {
     } else if (this.mode === GameMode.TimeAttack) {
       modeTimer = this.modeElapsed;
       modeTimerLabel = 'Run Time';
-      modeProgress = this.player.maxAltitude / TIME_ATTACK_TARGET_ALT;
+      modeProgress = this.player.maxAltitude / this.activeTimeAttackCourse.targetAltitude;
       modeProgressLabel = 'To Exit';
     } else if (this.mode === GameMode.BotRace) {
       modeProgress = this.player.maxAltitude / BOT_RACE_TARGET_ALT;
@@ -1800,7 +1819,13 @@ export class Game {
     this.cleanupRun();
     this.state = GameState.MainMenu;
     this.mainMenu.open(this.save, this.daily, {
-      onPlay: (mode) => this.startMode(mode),
+      onPlay: (mode) => {
+        if (mode === GameMode.TimeAttack) {
+          this.openTimeAttackSelect();
+        } else {
+          this.startMode(mode);
+        }
+      },
       onUnlocks: () => this.unlocksScreen.open(this.save, this.unlocks, this.achievements, this.toast, {
         onClose: () => this.openMainMenu(),
       }),
@@ -1828,6 +1853,19 @@ export class Game {
       },
       onSetName: () => this.openNamePrompt(),
     });
+  }
+
+  /** Pick a Time Attack course before starting the run. */
+  openTimeAttackSelect(): void {
+    this.mainMenu.close();
+    this.timeAttackSelect.open(
+      this.save,
+      (course) => {
+        this.activeTimeAttackCourse = course;
+        this.startMode(GameMode.TimeAttack);
+      },
+      () => this.openMainMenu(),
+    );
   }
 
   /** Open the name prompt, returning to the main menu afterwards. */
@@ -1886,7 +1924,7 @@ export class Game {
       }
       case GameMode.TimeAttack:
         seed = 0xc0ffee;
-        staticLayout = this.buildTimeAttackLayout();
+        staticLayout = buildCourseLayout(this.activeTimeAttackCourse);
         break;
       case GameMode.ComboRun:
         seed = (Math.random() * 0xffffffff) | 0;
@@ -1910,6 +1948,9 @@ export class Game {
     });
     this.player = new Player(0, -120);
     this.player.setEvents({
+      onHookFire: () => {
+        this.sfx.hookFire();
+      },
       onHookConnect: (e) => {
         this.combo.onHookConnect(e.perfectAnchor);
         this.sfx.hookConnect(e.distance);
@@ -2211,208 +2252,6 @@ export class Game {
     p.finishTime = time;
   }
 
-  private buildTimeAttackLayout(): Obstacle[] {
-    // Hand-crafted 5000m route. The course is divided into four narrative acts:
-    //   0–1000m  Tutorial corridor — generous platforms, no hazards.
-    //   1000–2500m  Pendulum bowls — energy nodes paired with side spikes.
-    //   2500–3800m  S-bend gauntlet — alternating tight chains with bouncy panels.
-    //   3800–5000m  Final ascent — sparse anchors, big swings, the medal threshold.
-    // Each entry is [yMeters, kind, x, widthOrSize, optionalNote].
-    type Spec =
-      | { y: number; kind: 'platform' | 'energy' | 'bouncy'; x: number; w?: number; h?: number }
-      | { y: number; kind: 'spike'; x: number; w: number }
-      | { y: number; kind: 'spark' | 'shield-pickup' | 'slow-pickup'; x: number };
-    const route: Spec[] = [
-      // Act 1 — gentle ascent (0–1000m).
-      { y: 80, kind: 'platform', x: -40, w: 220 },
-      { y: 220, kind: 'platform', x: 80, w: 200 },
-      { y: 360, kind: 'platform', x: -120, w: 200 },
-      { y: 500, kind: 'energy', x: 60 },
-      { y: 640, kind: 'platform', x: -180, w: 180 },
-      { y: 760, kind: 'platform', x: 100, w: 200 },
-      { y: 900, kind: 'energy', x: -40 },
-
-      // Act 2 — pendulum bowls (1000–2500m).
-      { y: 1040, kind: 'platform', x: -220, w: 140 },
-      { y: 1040, kind: 'platform', x: 120, w: 140 },
-      { y: 1180, kind: 'energy', x: 0 },
-      { y: 1220, kind: 'spike', x: 160, w: 80 },
-      { y: 1340, kind: 'platform', x: -240, w: 160 },
-      { y: 1340, kind: 'spike', x: 100, w: 120 },
-      { y: 1480, kind: 'energy', x: -60 },
-      { y: 1560, kind: 'spark', x: 60 },
-      { y: 1620, kind: 'platform', x: 160, w: 160 },
-      { y: 1720, kind: 'shield-pickup', x: 0 },
-      { y: 1800, kind: 'energy', x: 120 },
-      { y: 1880, kind: 'spike', x: -200, w: 110 },
-      { y: 1960, kind: 'platform', x: -60, w: 200 },
-      { y: 2120, kind: 'energy', x: -200 },
-      { y: 2280, kind: 'energy', x: 200 },
-      { y: 2440, kind: 'platform', x: 0, w: 200 },
-
-      // Act 3 — S-bend gauntlet (2500–3800m).
-      { y: 2580, kind: 'bouncy', x: -240, w: 100 },
-      { y: 2640, kind: 'energy', x: 160 },
-      { y: 2720, kind: 'spike', x: -120, w: 100 },
-      { y: 2780, kind: 'platform', x: 140, w: 180 },
-      { y: 2900, kind: 'spark', x: -80 },
-      { y: 2960, kind: 'energy', x: -200 },
-      { y: 3060, kind: 'bouncy', x: 200, w: 120 },
-      { y: 3160, kind: 'energy', x: 80 },
-      { y: 3240, kind: 'spike', x: -160, w: 90 },
-      { y: 3280, kind: 'platform', x: 140, w: 160 },
-      { y: 3400, kind: 'energy', x: -120 },
-      { y: 3480, kind: 'slow-pickup', x: 60 },
-      { y: 3560, kind: 'energy', x: 220 },
-      { y: 3680, kind: 'platform', x: -180, w: 180 },
-      { y: 3800, kind: 'energy', x: 60 },
-
-      // Act 4 — final ascent (3800–5000m).
-      { y: 3960, kind: 'energy', x: -120 },
-      { y: 4080, kind: 'platform', x: 160, w: 140 },
-      { y: 4220, kind: 'energy', x: -40 },
-      { y: 4360, kind: 'spike', x: 180, w: 110 },
-      { y: 4380, kind: 'energy', x: 80 },
-      { y: 4520, kind: 'bouncy', x: -180, w: 100 },
-      { y: 4680, kind: 'energy', x: 200 },
-      { y: 4820, kind: 'energy', x: -100 },
-      { y: 4960, kind: 'platform', x: 0, w: 280 },
-    ];
-    let nextId = 100000;
-    const obs: Obstacle[] = [];
-    for (const spec of route) {
-      const y = -spec.y * 10;
-      if (spec.kind === 'platform') {
-        const width = spec.w ?? 180;
-        const height = spec.h ?? 20;
-        obs.push({
-          id: nextId++,
-          x: spec.x - width / 2,
-          y,
-          width,
-          height,
-          kind: 'platform',
-          color: '#00f3ff',
-          grappleable: true,
-          lethal: false,
-          bouncy: false,
-          pickup: false,
-          collected: false,
-          unstableTimer: 0,
-          unstableTriggered: false,
-          amp: 0,
-          driftAngle: 0,
-          driftSpeed: 0,
-          lastX: spec.x - width / 2,
-          pulse: 0,
-          variant: 0,
-          seedPhase: 0,
-        });
-      } else if (spec.kind === 'energy') {
-        const size = spec.w ?? 38;
-        obs.push({
-          id: nextId++,
-          x: spec.x - size / 2,
-          y,
-          width: size,
-          height: size,
-          kind: 'energy',
-          color: '#a45cff',
-          grappleable: true,
-          lethal: false,
-          bouncy: false,
-          pickup: false,
-          collected: false,
-          unstableTimer: 0,
-          unstableTriggered: false,
-          amp: 0,
-          driftAngle: 0,
-          driftSpeed: 0,
-          lastX: spec.x - size / 2,
-          pulse: 0,
-          variant: 0,
-          seedPhase: 0,
-        });
-      } else if (spec.kind === 'bouncy') {
-        const width = spec.w ?? 110;
-        obs.push({
-          id: nextId++,
-          x: spec.x - width / 2,
-          y,
-          width,
-          height: 16,
-          kind: 'bouncy',
-          color: '#00ff8a',
-          grappleable: true,
-          lethal: false,
-          bouncy: true,
-          pickup: false,
-          collected: false,
-          unstableTimer: 0,
-          unstableTriggered: false,
-          amp: 0,
-          driftAngle: 0,
-          driftSpeed: 0,
-          lastX: spec.x - width / 2,
-          pulse: 0,
-          variant: 0,
-          seedPhase: 0,
-        });
-      } else if (spec.kind === 'spike') {
-        obs.push({
-          id: nextId++,
-          x: spec.x - spec.w / 2,
-          y,
-          width: spec.w,
-          height: 14,
-          kind: 'spike',
-          color: '#ff255e',
-          grappleable: false,
-          lethal: true,
-          bouncy: false,
-          pickup: false,
-          collected: false,
-          unstableTimer: 0,
-          unstableTriggered: false,
-          amp: 0,
-          driftAngle: 0,
-          driftSpeed: 0,
-          lastX: spec.x - spec.w / 2,
-          pulse: 0,
-          variant: 0,
-          seedPhase: 0,
-        });
-      } else {
-        // Pickup (spark, shield, slow).
-        obs.push({
-          id: nextId++,
-          x: spec.x - 14,
-          y,
-          width: spec.kind === 'spark' ? 16 : 28,
-          height: spec.kind === 'spark' ? 16 : 28,
-          kind: spec.kind,
-          color:
-            spec.kind === 'spark' ? '#ffd400' : spec.kind === 'shield-pickup' ? '#00ff8a' : '#a4f0ff',
-          grappleable: false,
-          lethal: false,
-          bouncy: false,
-          pickup: true,
-          collected: false,
-          unstableTimer: 0,
-          unstableTriggered: false,
-          amp: 0,
-          driftAngle: 0,
-          driftSpeed: 0,
-          lastX: spec.x - 14,
-          pulse: 0,
-          variant: 0,
-          seedPhase: 0,
-        });
-      }
-    }
-    return obs;
-  }
-
   private decodeGhost(arr: number[]): GhostFrame[] {
     const frames: GhostFrame[] = [];
     for (let i = 0; i < arr.length; i += 5) {
@@ -2443,20 +2282,22 @@ export class Game {
 
   private completeTimeAttack(): void {
     if (this.gameEnded) return;
+    const course = this.activeTimeAttackCourse;
+    const key = timeAttackKey(course.id);
     const time = this.modeElapsed;
-    const previousBest = this.save.data.bestTime[this.mode];
+    const previousBest = this.save.data.bestTime[key];
     let medal: TimeAttackResult['medal'] = 'none';
-    if (time < TIME_ATTACK_MEDALS.gold) medal = 'gold';
-    else if (time < TIME_ATTACK_MEDALS.silver) medal = 'silver';
-    else if (time < TIME_ATTACK_MEDALS.bronze) medal = 'bronze';
+    if (time < course.medals.gold) medal = 'gold';
+    else if (time < course.medals.silver) medal = 'silver';
+    else if (time < course.medals.bronze) medal = 'bronze';
     const newBest = previousBest === undefined || time < previousBest;
     if (newBest) {
-      this.save.data.bestTime[this.mode] = time;
+      this.save.data.bestTime[key] = time;
     }
-    const currentMedal = this.save.data.timeAttackMedals[this.mode] ?? 'none';
+    const currentMedal = this.save.data.timeAttackMedals[key] ?? 'none';
     const rank = { none: 0, bronze: 1, silver: 2, gold: 3 } as const;
     if (rank[medal] > rank[currentMedal]) {
-      this.save.data.timeAttackMedals[this.mode] = medal;
+      this.save.data.timeAttackMedals[key] = medal;
       if (medal === 'bronze') this.achievements.unlock('ta-bronze', this.notifyUnlock);
       if (medal === 'silver') this.achievements.unlock('ta-silver', this.notifyUnlock);
       if (medal === 'gold') {
@@ -2464,7 +2305,7 @@ export class Game {
         this.crazy.happytime();
       }
     }
-    this.endRun(`Cleared in ${time.toFixed(2)} s (${medal.toUpperCase()})`);
+    this.endRun(`Cleared ${course.name} in ${time.toFixed(2)} s (${medal.toUpperCase()})`);
   }
 
   /* ---------- Run lifecycle ---------- */
@@ -2488,6 +2329,8 @@ export class Game {
     const prevBestScore = this.save.data.bestScore[this.mode] ?? 0;
     const newBestScore = score > prevBestScore;
     if (newBestScore) this.save.data.bestScore[this.mode] = score;
+    // Time Attack "new best" is per-course; computed in completeTimeAttack().
+    // Here we just surface whether this run *cleared* the course (player alive).
     const newBestTime = this.mode === GameMode.TimeAttack && !this.player.dead;
 
     // Signal a "happy moment" to CrazyGames on a meaningful personal best
@@ -2551,6 +2394,7 @@ export class Game {
     }
 
     // Daily history + leaderboard
+    this.lastDailyRank = null;
     if (this.mode === GameMode.DailyChallenge) {
       const submitted = this.dailyRankedThisAttempt;
       this.daily.recordRun(score, altitude, this.combo.peak, submitted);
@@ -2564,6 +2408,7 @@ export class Game {
           .then((snapshot) => {
             const myEntry = snapshot.entries.find((b) => b.isYou);
             if (!myEntry) return;
+            this.lastDailyRank = myEntry.rank;
             const pct = (myEntry.rank - 1) / Math.max(1, snapshot.realPlayerCount);
             if (pct <= 0.5) this.achievements.unlock('daily-top50', this.notifyUnlock);
             if (pct <= 0.1) this.achievements.unlock('daily-top10', this.notifyUnlock);
@@ -2632,6 +2477,7 @@ export class Game {
       onMenu: () => this.openMainMenu(),
       onRevive: () => this.requestRevive(),
       onWatch2xAd: () => void this.watchDoubleAd(),
+      onShare: () => this.openShare(ctx),
     });
   }
 
@@ -2670,11 +2516,13 @@ export class Game {
     const adResult = await this.crazy.requestAd('rewarded');
     if (!adResult.rewarded && this.crazy.available) {
       this.toast.show('Ad failed — try again.');
-      this.gameOver.open(this.buildLastGameOverCtx(), {
+      const fallbackCtx = this.buildLastGameOverCtx();
+      this.gameOver.open(fallbackCtx, {
         onRetry: () => this.startMode(this.mode),
         onMenu: () => this.openMainMenu(),
         onRevive: () => this.requestRevive(),
         onWatch2xAd: () => void this.watchDoubleAd(),
+        onShare: () => this.openShare(fallbackCtx),
       });
       return;
     }
@@ -2701,6 +2549,44 @@ export class Game {
       this.save.save();
       this.toast.show(`+${lastRunSparks} bonus Sparks!`);
     }
+  }
+
+  /**
+   * Build the share-card payload and open the share screen. Re-opens the
+   * Game Over screen on close so the player isn't dumped to a blank canvas.
+   */
+  private openShare(ctx: GameOverContext): void {
+    const data: ShareCardData = {
+      mode: ctx.mode,
+      score: ctx.score,
+      altitude: ctx.altitude,
+      peakCombo: ctx.peakCombo,
+      elapsedSeconds: ctx.elapsedSeconds,
+      playerName: this.playerNameForBoard(),
+      gameUrl: this.canonicalGameUrl(),
+      ...(this.lastDailyRank ? { dailyRank: this.lastDailyRank } : {}),
+    };
+    this.gameOver.close();
+    this.shareScreen.open(data, () => {
+      this.gameOver.open(ctx, {
+        onRetry: () => this.startMode(this.mode),
+        onMenu: () => this.openMainMenu(),
+        onRevive: () => this.requestRevive(),
+        onWatch2xAd: () => void this.watchDoubleAd(),
+        onShare: () => this.openShare(ctx),
+      });
+    });
+  }
+
+  /**
+   * Best-effort canonical URL for sharing. Prefers a build-time override
+   * (`VITE_CANONICAL_URL`) so the live CrazyGames page can be linked from
+   * any host. Falls back to the current location.
+   */
+  private canonicalGameUrl(): string {
+    const override = import.meta.env.VITE_CANONICAL_URL as string | undefined;
+    if (override && override.length > 0) return override;
+    return `${window.location.origin}${window.location.pathname}`;
   }
 
   private buildLastGameOverCtx(): GameOverContext {

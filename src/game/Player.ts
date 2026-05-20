@@ -12,6 +12,7 @@ export interface PlayerInputState {
 }
 
 export interface PlayerEvents {
+  onHookFire: () => void;
   onHookConnect: (e: HookConnectEvent) => void;
   onHookRelease: (vel: Vec2) => void;
   onDash: () => void;
@@ -23,6 +24,7 @@ export interface PlayerEvents {
 }
 
 const DEFAULT_EVENTS: PlayerEvents = {
+  onHookFire: () => undefined,
   onHookConnect: () => undefined,
   onHookRelease: () => undefined,
   onDash: () => undefined,
@@ -93,7 +95,7 @@ export class Player {
     if (input.hookTarget) {
       const result = this.hook.shoot(this.pos, input.hookTarget);
       if (result.fired) {
-        // Event consumed by Game; the connect event happens in step().
+        this.events.onHookFire();
       }
     }
     if (input.releaseHook && this.hook.state === 'attached') {

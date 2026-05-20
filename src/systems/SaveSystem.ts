@@ -166,6 +166,30 @@ export class SaveSystem {
     const merged: SaveData = { ...base, ...data };
     merged.settings = { ...base.settings, ...(data.settings ?? {}) };
     merged.version = SAVE_VERSION;
+    // Time Attack records moved from a single key ('timeAttack') to a per-course
+    // key ('timeAttack:<id>') in May 2026. Map any legacy record onto the
+    // 'rookie' course so existing players keep their best time + medal.
+    const LEGACY_KEY = 'timeAttack';
+    const ROOKIE_KEY = 'timeAttack:rookie';
+    if (
+      merged.bestTime &&
+      merged.bestTime[LEGACY_KEY] !== undefined &&
+      merged.bestTime[ROOKIE_KEY] === undefined
+    ) {
+      merged.bestTime = { ...merged.bestTime, [ROOKIE_KEY]: merged.bestTime[LEGACY_KEY]! };
+      delete merged.bestTime[LEGACY_KEY];
+    }
+    if (
+      merged.timeAttackMedals &&
+      merged.timeAttackMedals[LEGACY_KEY] !== undefined &&
+      merged.timeAttackMedals[ROOKIE_KEY] === undefined
+    ) {
+      merged.timeAttackMedals = {
+        ...merged.timeAttackMedals,
+        [ROOKIE_KEY]: merged.timeAttackMedals[LEGACY_KEY]!,
+      };
+      delete merged.timeAttackMedals[LEGACY_KEY];
+    }
     return merged;
   }
 

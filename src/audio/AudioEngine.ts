@@ -1,3 +1,5 @@
+import { AudioAssets } from './AudioAssets';
+
 type W = Window & typeof globalThis;
 const w = globalThis as W;
 
@@ -8,6 +10,7 @@ export class AudioEngine {
   master: GainNode | null = null;
   musicBus: GainNode | null = null;
   sfxBus: GainNode | null = null;
+  assets: AudioAssets;
   enabled: boolean = true;
   musicEnabled: boolean = true;
   sfxEnabled: boolean = true;
@@ -17,6 +20,10 @@ export class AudioEngine {
   /** Last user-set sfx volume (0..1). Restored when re-enabling. */
   private sfxVolume = 0.9;
   private masterVolume = 0.65;
+
+  constructor() {
+    this.assets = new AudioAssets(this);
+  }
 
   /** Initialise on user gesture so iOS allows audio playback. */
   unlock(): void {

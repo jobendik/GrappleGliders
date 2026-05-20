@@ -17,6 +17,12 @@ const THEME_MUSIC: Record<string, ThemeMusic> = {
   'ice-station': { scale: [0, 2, 5, 7, 11], rootHz: 120, tempo: 102, pad: 'triangle', lead: 'sine' },
 };
 
+// Themes that should play the licensed soundtrack instead of procedural notes.
+// All themes route to it for now — it's the new house track and matches the
+// neon-synthwave palette. The procedural engine remains as a fallback for any
+// future theme that opts out by being missing from this set.
+const MP3_THEMES = new Set<string>(Object.keys(THEME_MUSIC));
+
 const noteToHz = (root: number, semis: number): number => root * Math.pow(2, semis / 12);
 
 export class Music {
@@ -26,6 +32,10 @@ export class Music {
   private scheduler: ReturnType<typeof setInterval> | null = null;
   private startTime = 0;
   private beatIndex = 0;
+  /** Active MP3 source node when streaming the licensed soundtrack. */
+  private mp3Source: AudioBufferSourceNode | null = null;
+  /** Cached target intensity, applied once the bus is mounted. */
+  private pendingIntensity: number | null = null;
 
   constructor(engine: AudioEngine) {
     this.engine = engine;
@@ -34,15 +44,48 @@ export class Music {
   play(themeId: string): void {
     if (this.currentTheme === themeId) return;
     this.stop();
-    if (!this.engine.ctx || !this.engine.musicDest) return;
-    const def = THEME_MUSIC[themeId] ?? THEME_MUSIC.synthwave!;
-    this.currentTheme = themeId;
     const ctx = this.engine.ctx;
+    if (!ctx || !this.engine.musicDest) return;
+    this.currentTheme = themeId;
     const bus = ctx.createGain();
     bus.gain.value = 0;
     bus.gain.linearRampToValueAtTime(0.4, ctx.currentTime + 2);
     bus.connect(this.engine.musicDest);
     this.bus = bus;
+
+    if (MP3_THEMES.has(themeId)) {
+      // Try the MP3 first; fall back to procedural if the load fails.
+      void this.startMp3(themeId);
+      return;
+    }
+    this.startProcedural(themeId);
+  }
+
+  private async startMp3(themeId: string): Promise<void> {
+    const buffer = await this.engine.assets.load('music:above-the-steel');
+    // The user may have switched themes / stopped during the load.
+    if (this.currentTheme !== themeId || !this.bus || !this.engine.ctx) return;
+    if (!buffer) {
+      this.startProcedural(themeId);
+      return;
+    }
+    const ctx = this.engine.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+    src.connect(this.bus);
+    src.start(0);
+    this.mp3Source = src;
+    if (this.pendingIntensity !== null) {
+      this.setIntensity(this.pendingIntensity);
+      this.pendingIntensity = null;
+    }
+  }
+
+  private startProcedural(themeId: string): void {
+    const def = THEME_MUSIC[themeId] ?? THEME_MUSIC.synthwave!;
+    const ctx = this.engine.ctx;
+    if (!ctx) return;
     this.startTime = ctx.currentTime;
     this.beatIndex = 0;
     const beatSec = 60 / def.tempo;
@@ -66,7 +109,6 @@ export class Music {
     const ctx = this.engine.ctx;
     const bus = this.bus;
     if (!ctx || !bus) return;
-    // Bassline: root on beats 0 and 2
     if (idx % 4 === 0 || idx % 4 === 2) {
       const bass = ctx.createOscillator();
       const g = ctx.createGain();
@@ -79,7 +121,6 @@ export class Music {
       bass.start(t);
       bass.stop(t + beatSec);
     }
-    // Pad chord every 4 beats
     if (idx % 8 === 0) {
       [0, 4, 7].forEach((s) => {
         const o = ctx.createOscillator();
@@ -94,7 +135,6 @@ export class Music {
         o.stop(t + beatSec * 8);
       });
     }
-    // Arpeggio every beat
     const scale = def.scale;
     const step = scale[idx % scale.length]!;
     const octave = (Math.floor(idx / scale.length) % 3) + 1;
@@ -117,15 +157,31 @@ export class Music {
 
   /** 0..1 — eased volume scale used to swell the music as combo rises. */
   setIntensity(t: number): void {
-    if (!this.bus || !this.engine.ctx) return;
-    const target = 0.32 + Math.max(0, Math.min(1, t)) * 0.4;
-    this.bus.gain.setTargetAtTime(target, this.engine.ctx.currentTime, 0.4);
+    const ctx = this.engine.ctx;
+    if (!ctx) return;
+    if (!this.bus) {
+      this.pendingIntensity = t;
+      return;
+    }
+    // The MP3 already has its own arrangement, so the intensity ramp is narrower
+    // (0.55–0.85) to avoid pumping the master. Procedural music gets the wider
+    // range so the original combo lift still feels present.
+    const usingMp3 = this.mp3Source !== null;
+    const lo = usingMp3 ? 0.55 : 0.32;
+    const hi = usingMp3 ? 0.85 : 0.72;
+    const target = lo + Math.max(0, Math.min(1, t)) * (hi - lo);
+    this.bus.gain.setTargetAtTime(target, ctx.currentTime, 0.4);
   }
 
   stop(): void {
     if (this.scheduler) {
       clearInterval(this.scheduler);
       this.scheduler = null;
+    }
+    if (this.mp3Source) {
+      try { this.mp3Source.stop(); } catch { /* already stopped */ }
+      try { this.mp3Source.disconnect(); } catch { /* already disconnected */ }
+      this.mp3Source = null;
     }
     if (this.bus && this.engine.ctx) {
       const ctx = this.engine.ctx;
@@ -136,5 +192,6 @@ export class Music {
     }
     this.bus = null;
     this.currentTheme = null;
+    this.pendingIntensity = null;
   }
 }

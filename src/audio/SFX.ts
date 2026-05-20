@@ -45,7 +45,27 @@ export class SFX {
   }
 
   hookFire(): void {
-    this.blip('hookFire', { freq: 320, duration: 0.06, type: 'sawtooth', gain: 0.04, slide: 220 });
+    const ctx = this.engine.ctx;
+    const dest = this.engine.sfxDest;
+    if (!ctx || !dest) return;
+    const buffer = this.engine.assets.get('sfx:whip');
+    if (!buffer) {
+      // Buffer still decoding (first frame after audio unlock). Kick off the
+      // load so the next fire has it, and use the procedural blip in the
+      // meantime so the action isn't silent.
+      void this.engine.assets.load('sfx:whip');
+      this.blip('hookFire', { freq: 320, duration: 0.06, type: 'sawtooth', gain: 0.04, slide: 220 });
+      return;
+    }
+    if (!this.canPlay('hookFire', 60)) return;
+    const src = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    // Slight randomised pitch/gain so repeated fires don't sound robotic.
+    src.playbackRate.value = 0.94 + Math.random() * 0.12;
+    gain.gain.value = 0.9;
+    src.buffer = buffer;
+    src.connect(gain).connect(dest);
+    src.start(0);
   }
 
   hookConnect(distance: number): void {

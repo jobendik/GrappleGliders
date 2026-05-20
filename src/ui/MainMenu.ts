@@ -2,6 +2,7 @@ import { GameMode, MODES } from '../game/GameState';
 import { formatCountdown, formatScore } from '../utils/format';
 import type { SaveSystem } from '../systems/SaveSystem';
 import type { DailyChallengeSystem } from '../systems/DailyChallengeSystem';
+import { TIME_ATTACK_COURSES } from '../content/timeAttackCourses';
 
 export interface MainMenuCallbacks {
   onPlay(mode: GameMode): void;
@@ -146,8 +147,20 @@ export class MainMenu {
       case GameMode.DailyChallenge:
         return `Today: ${formatScore(save.data.bestScore[mode] ?? 0)}`;
       case GameMode.TimeAttack: {
-        const t = save.data.bestTime[mode];
-        return t ? `Best ${t.toFixed(2)} s` : 'No record';
+        // Surface the player's best clear across all courses, plus how many of
+        // the four they've placed any medal on. Makes the menu card hint at
+        // the new depth without listing every course on the menu itself.
+        let bestT = Infinity;
+        let medalled = 0;
+        for (const c of TIME_ATTACK_COURSES) {
+          const key = `${GameMode.TimeAttack}:${c.id}`;
+          const t = save.data.bestTime[key];
+          if (typeof t === 'number') bestT = Math.min(bestT, t);
+          if ((save.data.timeAttackMedals[key] ?? 'none') !== 'none') medalled += 1;
+        }
+        const total = TIME_ATTACK_COURSES.length;
+        if (medalled === 0) return `${total} courses — No medal yet`;
+        return `${medalled}/${total} courses · Best ${bestT.toFixed(2)} s`;
       }
       case GameMode.ComboRun:
         return `Best ${formatScore(save.data.bestScore[mode] ?? 0)}`;
