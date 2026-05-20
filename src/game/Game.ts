@@ -174,6 +174,13 @@ export class Game {
   private slowLavaFrames = 0;
   /** Have we shown the preroll midgame ad yet this session? */
   private prerollShown = false;
+  /**
+   * Visual-only lava fireballs that arc up and back down. Pure decoration —
+   * they don't damage the player, but they sell the danger of the lava.
+   */
+  private fireballs: { x: number; y: number; vx: number; vy: number; ttl: number; r: number }[] = [];
+  /** Frames until next fireball spawn attempt. */
+  private fireballCooldown = 120;
 
   constructor(opts: {
     canvas: HTMLCanvasElement;
@@ -506,6 +513,32 @@ export class Game {
         const themeAccent = this.themes.current.accent;
         this.particles.mote(this.camera.position.x + offX, this.camera.position.y + offY, themeAccent);
       }
+      // Hook-in-flight particle trail. Sparkly bits stream from the projectile
+      // for visible flight motion. Hooks the spawn rate to the hook's velocity.
+      if (this.player.hook.state === 'shooting') {
+        const hookDef = getHook(this.save.data.equippedHook);
+        const hpos = this.player.hook.position;
+        const hvel = this.player.hook.velocity;
+        for (let k = 0; k < 2; k++) {
+          this.particles.thruster(
+            hpos.x - hvel.x * 0.04,
+            hpos.y - hvel.y * 0.04,
+            -hvel.x * 0.08 + (Math.random() - 0.5) * 1.5,
+            -hvel.y * 0.08 + (Math.random() - 0.5) * 1.5,
+            hookDef.color,
+          );
+        }
+        if (Math.random() < 0.35) {
+          this.particles.hotSpark(
+            hpos.x,
+            hpos.y,
+            -hvel.x * 0.05 + (Math.random() - 0.5) * 2.5,
+            -hvel.y * 0.05 + (Math.random() - 0.5) * 2.5,
+            '#ffffff',
+            0.25,
+          );
+        }
+      }
     }
 
     // Record ghost frames every ~4 ticks for daily/endless
@@ -660,6 +693,10 @@ export class Game {
           this.combo.combo >= 6 ? '#ff2bff' : this.combo.combo >= 4 ? '#ff9d2e' : '#ffd400';
         this.screen.setComboTint(tintColor, 0.3 + t * 0.5);
       }
+      // Combo also boosts the background aurora — sustained chains light the sky.
+      const targetComboBoost = Math.max(0, Math.min(1, (this.combo.combo - 1) / 8));
+      this.background.comboBoost +=
+        (targetComboBoost - this.background.comboBoost) * 0.04;
     }
 
     if (this.world && this.player) {
@@ -1127,46 +1164,153 @@ export class Game {
         ctx.arc(cx, drawY, r - 4, 0, Math.PI * 2);
         ctx.stroke();
       } else {
-        // Platform / bouncy / unstable — flat rect with gradient depth + edge highlight.
-        const isBouncy = o.kind === 'bouncy';
-        const isUnstable = o.kind === 'unstable';
-        const baseColor = o.color;
-        // Body gradient — top half-bright to bottom-shadow gives 3D feel.
-        const grad = ctx.createLinearGradient(o.x, o.y, o.x, o.y + o.height);
-        grad.addColorStop(0, isBouncy ? lighten(baseColor, 0.3) : withAlphaColor(baseColor, 0.95));
-        grad.addColorStop(0.5, baseColor);
-        grad.addColorStop(1, mixColor(baseColor, '#000000', 0.5));
-        ctx.fillStyle = grad;
-        if (!this.lowQuality) {
-          ctx.shadowColor = baseColor;
-          ctx.shadowBlur = (isBouncy ? 14 : isUnstable ? 12 : 8) * pulse;
-        }
-        ctx.fillRect(o.x, o.y, o.width, o.height);
-        ctx.shadowBlur = 0;
-        // Glowing top edge
-        if (!this.lowQuality) {
-          ctx.save();
-          ctx.globalCompositeOperation = 'lighter';
-          ctx.fillStyle = withAlphaColor('#ffffff', 0.5 * pulse);
-          ctx.fillRect(o.x, o.y, o.width, 1.5);
-          // Bouncy panels also get scanline highlights.
-          if (isBouncy) {
-            ctx.fillStyle = withAlphaColor('#ffffff', 0.25);
-            for (let sx = o.x + 4; sx < o.x + o.width - 4; sx += 6) {
-              ctx.fillRect(sx, o.y + 2, 2, o.height - 4);
-            }
-          }
-          // Unstable: flashing warning hash lines
-          if (isUnstable) {
-            const flash = 0.4 + Math.abs(Math.sin(time * 0.18)) * 0.6;
-            ctx.fillStyle = withAlphaColor('#ffffff', flash * 0.5);
-            ctx.fillRect(o.x, o.y + o.height - 2, o.width, 2);
-          }
-          ctx.restore();
-        }
+        // Platform / bouncy / unstable — varied visual styles selected by
+        // `o.variant` (0=classic, 1=circuit, 2=hover-pad).
+        this.drawPlatformLike(o, pulse, time);
       }
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
+    }
+  }
+
+  /**
+   * Render a platform-like surface (platform/bouncy/unstable). Three visual
+   * variants share gameplay behavior but look distinct, breaking the monotony
+   * of repeated rectangles. Edge accent uses the theme accent so the platform
+   * pops against the (typically) violet body without matching the player skin.
+   */
+  private drawPlatformLike(o: Obstacle, pulse: number, time: number): void {
+    const ctx = this.renderer.ctx;
+    const isBouncy = o.kind === 'bouncy';
+    const isUnstable = o.kind === 'unstable';
+    const baseColor = o.color;
+    const accent = this.themes.current.accent;
+    const variant = o.variant;
+
+    // Variant 2 (hover-pad): floating particles under the platform.
+    if (!this.lowQuality && variant === 2 && Math.random() < 0.12) {
+      const ex = o.x + Math.random() * o.width;
+      const ey = o.y + o.height + 2;
+      this.particles.thruster(ex, ey, (Math.random() - 0.5) * 0.4, 0.6 + Math.random() * 0.8, accent);
+    }
+
+    // Drop shadow / hover halo beneath the platform — gives floating depth.
+    if (!this.lowQuality) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const haloA = (variant === 2 ? 0.35 : 0.18) * pulse;
+      const haloH = variant === 2 ? 24 : 14;
+      const halo = ctx.createLinearGradient(0, o.y + o.height, 0, o.y + o.height + haloH);
+      halo.addColorStop(0, withAlphaColor(isBouncy ? '#00ff8a' : isUnstable ? '#ff9d2e' : accent, haloA));
+      halo.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = halo;
+      ctx.fillRect(o.x - 4, o.y + o.height, o.width + 8, haloH);
+      ctx.restore();
+    }
+
+    // Body gradient — top half-bright to bottom-shadow gives 3D feel.
+    const grad = ctx.createLinearGradient(o.x, o.y, o.x, o.y + o.height);
+    grad.addColorStop(0, isBouncy ? lighten(baseColor, 0.35) : lighten(baseColor, 0.15));
+    grad.addColorStop(0.5, baseColor);
+    grad.addColorStop(1, mixColor(baseColor, '#000000', 0.55));
+    ctx.fillStyle = grad;
+    if (!this.lowQuality) {
+      ctx.shadowColor = baseColor;
+      ctx.shadowBlur = (isBouncy ? 14 : isUnstable ? 12 : 8) * pulse;
+    }
+    ctx.fillRect(o.x, o.y, o.width, o.height);
+    ctx.shadowBlur = 0;
+
+    // Glowing top edge using the theme accent color (NOT body color) — this
+    // visually separates platforms from the violet base and adds neon trim.
+    if (!this.lowQuality) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      // Bright accent strip
+      ctx.fillStyle = withAlphaColor(accent, 0.75 * pulse);
+      ctx.fillRect(o.x, o.y, o.width, 1.5);
+      // White hot sub-strip
+      ctx.fillStyle = withAlphaColor('#ffffff', 0.5 * pulse);
+      ctx.fillRect(o.x + 1, o.y + 0.3, o.width - 2, 0.7);
+      ctx.restore();
+    }
+
+    // Variant 1 (circuit): animated bright lines flowing along the top.
+    if (!this.lowQuality && variant === 1) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const flow = (time * 1.2 + o.seedPhase * 60) % o.width;
+      const segLen = 18;
+      // Two flowing segments
+      for (let k = 0; k < 2; k++) {
+        const sx = ((flow + k * (o.width / 2)) % (o.width + segLen)) - segLen;
+        const x1 = Math.max(o.x, o.x + sx);
+        const x2 = Math.min(o.x + o.width, o.x + sx + segLen);
+        if (x2 > x1) {
+          const g = ctx.createLinearGradient(x1, 0, x2, 0);
+          g.addColorStop(0, withAlphaColor(accent, 0));
+          g.addColorStop(0.5, withAlphaColor(accent, 0.9));
+          g.addColorStop(1, withAlphaColor(accent, 0));
+          ctx.fillStyle = g;
+          ctx.fillRect(x1, o.y + 2, x2 - x1, 1.2);
+        }
+      }
+      // Static dim circuit nodes
+      ctx.fillStyle = withAlphaColor(accent, 0.4);
+      for (let nx = o.x + 8; nx < o.x + o.width - 4; nx += 16) {
+        ctx.fillRect(nx, o.y + o.height - 3, 2, 2);
+      }
+      ctx.restore();
+    }
+
+    // Variant 0 (classic): subtle vertical pinstripes for tech detail.
+    if (!this.lowQuality && variant === 0) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = withAlphaColor(accent, 0.18);
+      for (let sx = o.x + 6; sx < o.x + o.width - 4; sx += 12) {
+        ctx.fillRect(sx, o.y + 2, 1, o.height - 4);
+      }
+      ctx.restore();
+    }
+
+    // Bouncy panels: prominent diagonal chevrons (overrides variant detail).
+    if (!this.lowQuality && isBouncy) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = withAlphaColor('#ffffff', 0.3);
+      for (let sx = o.x + 4; sx < o.x + o.width - 4; sx += 8) {
+        ctx.fillRect(sx, o.y + 2, 2, o.height - 4);
+      }
+      // Soft up-arrow hint at center
+      const cx2 = o.x + o.width / 2;
+      ctx.strokeStyle = withAlphaColor('#ffffff', 0.7);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(cx2 - 4, o.y + o.height - 4);
+      ctx.lineTo(cx2, o.y + 4);
+      ctx.lineTo(cx2 + 4, o.y + o.height - 4);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Unstable: flashing warning hash lines + diagonal danger stripes.
+    if (!this.lowQuality && isUnstable) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const flash = 0.4 + Math.abs(Math.sin(time * 0.18)) * 0.6;
+      ctx.fillStyle = withAlphaColor('#ffffff', flash * 0.6);
+      ctx.fillRect(o.x, o.y + o.height - 2, o.width, 2);
+      // Hatched diagonal stripes
+      ctx.strokeStyle = withAlphaColor('#ffd400', 0.4);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let sx = o.x; sx < o.x + o.width; sx += 6) {
+        ctx.moveTo(sx, o.y);
+        ctx.lineTo(sx + 5, o.y + o.height);
+      }
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -1512,6 +1656,83 @@ export class Game {
         }
       }
     }
+
+    // Spawn + update fireballs that arc upward from the lava surface.
+    this.updateFireballs(y, colors);
+    this.drawFireballs(ctx);
+  }
+
+  /**
+   * Lava fireballs: visual-only arcing projectiles that periodically erupt
+   * from the surface. Sell the danger of the rising hazard without adding new
+   * lethal hazards (which would change gameplay tuning).
+   */
+  private updateFireballs(lavaY: number, colors: [string, string]): void {
+    if (!this.player) return;
+    const reduced = this.save.data.settings.reducedMotion;
+    if (this.lowQuality || reduced) {
+      this.fireballs.length = 0;
+      return;
+    }
+    // Spawn cooldown — accelerates when lava is close to the player.
+    this.fireballCooldown -= 1;
+    if (this.fireballCooldown <= 0 && this.fireballs.length < 3) {
+      const distToPlayer = lavaY - this.player.pos.y;
+      if (distToPlayer < 1200 && Math.random() < 0.7) {
+        const ex = this.player.pos.x + (Math.random() - 0.5) * this.renderer.cssWidth * 0.8;
+        const vx = (Math.random() - 0.5) * 3;
+        const vy = -8 - Math.random() * 4;
+        this.fireballs.push({ x: ex, y: lavaY - 6, vx, vy, ttl: 90, r: 6 + Math.random() * 3 });
+        // Launch burst
+        this.particles.shockwave(ex, lavaY - 4, '#ffd200', { size: 14, life: 0.35, thickness: 2 });
+        this.particles.burst(ex, lavaY - 8, 4, colors[0], { speed: 0.5, life: 0.4 });
+      }
+      // Frequency increases as lava gets closer.
+      const minCD = Math.max(40, 200 - (1200 - distToPlayer) * 0.12);
+      this.fireballCooldown = minCD + Math.random() * 60;
+    }
+    // Integrate fireballs.
+    for (let i = this.fireballs.length - 1; i >= 0; i--) {
+      const f = this.fireballs[i]!;
+      f.vy += 0.32; // gravity
+      f.x += f.vx;
+      f.y += f.vy;
+      f.ttl -= 1;
+      // Emit a trail
+      if (Math.random() < 0.6) {
+        this.particles.thruster(f.x, f.y, -f.vx * 0.15, -f.vy * 0.15, colors[0]);
+      }
+      // Despawn when hitting lava or expired
+      if (f.y >= lavaY - 4 || f.ttl <= 0) {
+        // Splash
+        this.particles.shockwave(f.x, lavaY - 4, '#ffd200', { size: 16, life: 0.4, thickness: 3 });
+        this.particles.burst(f.x, lavaY - 4, 6, '#ffd200', { speed: 0.6, life: 0.5 });
+        this.fireballs.splice(i, 1);
+      }
+    }
+  }
+
+  private drawFireballs(ctx: CanvasRenderingContext2D): void {
+    if (this.fireballs.length === 0) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of this.fireballs) {
+      // Outer halo
+      const halo = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r * 3);
+      halo.addColorStop(0, 'rgba(255,210,0,0.8)');
+      halo.addColorStop(0.45, 'rgba(255,90,0,0.4)');
+      halo.addColorStop(1, 'rgba(255,90,0,0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r * 3, 0, Math.PI * 2);
+      ctx.fill();
+      // Hot core
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r * 0.55, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   private isVisible(x: number, y: number, padding: number): boolean {
@@ -1750,6 +1971,7 @@ export class Game {
         this.sfx.dash();
         this.camera.shake(8);
         this.camera.chroma(0.45);
+        this.camera.punchZoom(0.06, 14);
         this.screen.pulseBloom(0.45);
         if (this.player) {
           // Big shockwave ring + magenta burst + radial sparks shooting outward
@@ -1928,6 +2150,8 @@ export class Game {
     this.runSparks = 0;
     this.nextMilestone = 100;
     this.slowLavaFrames = 0;
+    this.fireballs.length = 0;
+    this.fireballCooldown = 240;
     this.ghostRecording = [];
     this.ghostPlayback =
       mode === GameMode.EndlessClimb || mode === GameMode.DailyChallenge
@@ -2081,6 +2305,8 @@ export class Game {
           driftSpeed: 0,
           lastX: spec.x - width / 2,
           pulse: 0,
+          variant: 0,
+          seedPhase: 0,
         });
       } else if (spec.kind === 'energy') {
         const size = spec.w ?? 38;
@@ -2104,6 +2330,8 @@ export class Game {
           driftSpeed: 0,
           lastX: spec.x - size / 2,
           pulse: 0,
+          variant: 0,
+          seedPhase: 0,
         });
       } else if (spec.kind === 'bouncy') {
         const width = spec.w ?? 110;
@@ -2127,6 +2355,8 @@ export class Game {
           driftSpeed: 0,
           lastX: spec.x - width / 2,
           pulse: 0,
+          variant: 0,
+          seedPhase: 0,
         });
       } else if (spec.kind === 'spike') {
         obs.push({
@@ -2149,6 +2379,8 @@ export class Game {
           driftSpeed: 0,
           lastX: spec.x - spec.w / 2,
           pulse: 0,
+          variant: 0,
+          seedPhase: 0,
         });
       } else {
         // Pickup (spark, shield, slow).
@@ -2173,6 +2405,8 @@ export class Game {
           driftSpeed: 0,
           lastX: spec.x - 14,
           pulse: 0,
+          variant: 0,
+          seedPhase: 0,
         });
       }
     }

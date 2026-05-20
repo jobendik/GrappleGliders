@@ -46,8 +46,18 @@ export class Renderer {
 
   pushCamera(camera: Camera): void {
     const { x, y, shakeX, shakeY } = camera.getRenderOrigin();
+    const zoom = camera.getZoom();
+    const roll = camera.roll;
+    const cw = this.cssWidth / 2;
+    const ch = this.cssHeight / 2;
     this.ctx.save();
-    this.ctx.translate(-x + shakeX, -y + shakeY);
+    // Pivot zoom + roll around the screen center so the camera "leans" with
+    // the player rather than around the origin.
+    this.ctx.translate(cw + shakeX, ch + shakeY);
+    if (zoom !== 1) this.ctx.scale(zoom, zoom);
+    if (roll !== 0) this.ctx.rotate(roll);
+    this.ctx.translate(-cw, -ch);
+    this.ctx.translate(-x, -y);
   }
 
   popCamera(): void {

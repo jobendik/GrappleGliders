@@ -33,6 +33,8 @@ const buildWorldWithPickup = (kind: PickupKind, x: number, y: number): { world: 
     driftSpeed: 0,
     lastX: x - 10,
     pulse: 0,
+    variant: 0,
+    seedPhase: 0,
   };
   world.obstacles.push(pickup);
   return { world, pickup };
@@ -90,6 +92,8 @@ describe('Player pickup interactions', () => {
       driftSpeed: 0,
       lastX: -50,
       pulse: 0,
+      variant: 0,
+      seedPhase: 0,
     };
     world.obstacles.push(spike);
     player.update(
@@ -134,6 +138,8 @@ describe('Player pickup interactions', () => {
       driftSpeed: 0,
       lastX: 80,
       pulse: 0,
+      variant: 0,
+      seedPhase: 0,
     };
     world.obstacles.push(spark);
     let pickedSpark = false;
