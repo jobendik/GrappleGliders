@@ -38,7 +38,19 @@ To attach a custom domain, add a `CNAME` file at the repo root containing the ba
 
 ## CrazyGames packaging
 
-For a CrazyGames submission, run `npm run build`, then zip the contents of `dist/` (not the directory itself). Because `vite.config.ts` sets `base: './'`, the bundle works from any subdirectory the CrazyGames player serves it from.
+For a CrazyGames submission, run `npm run build`, then zip the contents of `dist/` (not the directory itself). Because `vite.config.ts` sets `base: './'`, the bundle works from any subdirectory the CrazyGames player serves it from. Promotional copy and store assets are bundled in [`STORE_LISTING.md`](./STORE_LISTING.md).
+
+## Real leaderboard backend
+
+To turn on real cross-player competition on the daily challenge, deploy the reference Cloudflare Worker in [`server/`](./server/README.md) (or wire your own service against the same contract) and set:
+
+```env
+VITE_LEADERBOARD_API_URL=https://your-worker.workers.dev
+# Optional:
+# VITE_LEADERBOARD_API_KEY=<bearer-token>
+```
+
+Copy `.env.example` to `.env.local` for local development, or set the variables in your CI deploy environment for the production build. Without these vars the game falls back to the offline local-only ladder.
 
 ## Troubleshooting
 

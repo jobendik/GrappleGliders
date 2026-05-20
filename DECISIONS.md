@@ -24,9 +24,13 @@ The prototype bolted touch onto a mouse-first design. The production input layer
 
 ## 6. Backend-pluggable leaderboard with persistent local submissions
 
-CrazyGames v3 does not expose a global leaderboard primitive. `LeaderboardSystem` is now built around a `LeaderboardBackend` interface (`fetchDaily`, `submitDaily`) so a real service (Supabase/Firebase/own API) can be wired in without touching call sites. The default `LocalLeaderboardBackend` persists every ranked daily attempt to `SaveData.leaderboardSubmissions`, which the SaveSystem already mirrors to the CrazyGames cloud — that gives the player a real cross-device history even with no third party. `buildDailyBoard` blends those real entries with a deterministic seeded bot ladder to fill out the table to 100, marking each row as `isBot` so the UI can label them. The daily-screen disclaimer tells the player exactly what they're looking at.
+CrazyGames v3 does not expose a global leaderboard primitive. `LeaderboardSystem` is built around a `LeaderboardBackend` interface (`fetchDaily`, `submitDaily`) so a real service (Cloudflare KV/Supabase/Firebase) plugs in without touching call sites. Three concrete backends ship with the game:
 
-To wire a real global backend later: implement `LeaderboardBackend` against the service of choice and call `leaderboardSys.setBackend(...)` after init.
+- `LocalLeaderboardBackend` — persists every ranked daily attempt to `SaveData.leaderboardSubmissions`, which the SaveSystem mirrors to the CrazyGames cloud. Gives a real cross-device personal history even with no third party.
+- `RemoteLeaderboardBackend` — HTTP adapter against the two-endpoint contract (`GET /leaderboard/{date}`, `POST /leaderboard`). Wire by setting `VITE_LEADERBOARD_API_URL` at build time.
+- `LayeredLeaderboardBackend` — composes a primary (remote) with a fallback (local). Fetches both and merges; submit writes locally first so the player sees their entry even if the network is down.
+
+The right combination is picked at boot in `Game.buildLeaderboardBackend()`. A reference Cloudflare Worker (`server/cloudflare-worker.ts`) implements the contract end-to-end with KV storage and CORS; `server/README.md` documents both the Cloudflare and Supabase deploy paths.
 
 ## 7. Ghost replay as a 5-number stride array
 
