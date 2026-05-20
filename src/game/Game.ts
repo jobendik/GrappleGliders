@@ -1190,6 +1190,9 @@ export class Game {
         this.particles.burst(obs.x + obs.width / 2, obs.y + obs.height / 2, 12, obs.color, { speed: 0.7 });
         this.haptics.trigger('bounce');
       },
+      onShieldAbsorb: () => {
+        this.achievements.unlock('shield-saved', this.notifyUnlock);
+      },
       onPickup: (kind, obs) => {
         const cx = obs.x + obs.width / 2;
         const cy = obs.y + obs.height / 2;
@@ -1650,7 +1653,7 @@ export class Game {
           .then((snapshot) => {
             const myEntry = snapshot.entries.find((b) => b.isYou);
             if (!myEntry) return;
-            const pct = (myEntry.rank - 1) / Math.max(1, snapshot.entries.length);
+            const pct = (myEntry.rank - 1) / Math.max(1, snapshot.realPlayerCount);
             if (pct <= 0.5) this.achievements.unlock('daily-top50', this.notifyUnlock);
             if (pct <= 0.1) this.achievements.unlock('daily-top10', this.notifyUnlock);
           });
@@ -1779,13 +1782,11 @@ export class Game {
   private async watchDoubleAd(): Promise<void> {
     const adResult = await this.crazy.requestAd('rewarded');
     if (adResult.rewarded || !this.crazy.available) {
-      const bonus = Math.floor((this.save.data.bestScore[this.mode] ?? 0) * 0); // we doubled the *current* run; for simplicity grant 100% bonus of what was awarded already.
-      // The simplest interpretation: double the rewards awarded by this run.
       const lastRunSparks =
         Math.floor((this.player?.maxAltitude ?? 0) / 50) +
         Math.floor(this.scoring.total / 200) +
         this.combo.perfectAnchors;
-      this.save.data.sparks += lastRunSparks + bonus;
+      this.save.data.sparks += lastRunSparks;
       this.save.save();
       this.toast.show(`+${lastRunSparks} bonus Sparks!`);
     }
