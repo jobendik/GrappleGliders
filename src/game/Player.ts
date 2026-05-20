@@ -19,6 +19,7 @@ export interface PlayerEvents {
   onNearMiss: (obs: Obstacle, distance: number) => void;
   onBounce: (obs: Obstacle) => void;
   onPickup: (kind: PickupKind, obs: Obstacle) => void;
+  onShieldAbsorb: () => void;
 }
 
 const DEFAULT_EVENTS: PlayerEvents = {
@@ -29,6 +30,7 @@ const DEFAULT_EVENTS: PlayerEvents = {
   onNearMiss: () => undefined,
   onBounce: () => undefined,
   onPickup: () => undefined,
+  onShieldAbsorb: () => undefined,
 };
 
 export class Player {
@@ -186,6 +188,7 @@ export class Player {
         this.pos.y = killY - this.radius * 4;
         this.vel.y = -12;
         this.invuln = 30;
+        this.events.onShieldAbsorb();
       } else {
         this.die('Consumed by the lava');
         return;
@@ -266,6 +269,7 @@ export class Player {
             this.shield -= 1;
             this.invuln = 40;
             this.vel.y = -10;
+            this.events.onShieldAbsorb();
             continue;
           }
           this.die('Impaled on spikes');
