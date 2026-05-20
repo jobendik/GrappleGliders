@@ -10,7 +10,7 @@ interface TrailPoint {
 
 export class TrailRenderer {
   private points: TrailPoint[] = [];
-  private maxPoints = 48;
+  private maxPoints = 64;
   private accum = 0;
 
   reset(): void {
@@ -19,7 +19,7 @@ export class TrailRenderer {
 
   push(x: number, y: number, def: TrailDef, dt: number): void {
     this.accum += dt;
-    if (this.accum < 0.45) return;
+    if (this.accum < 0.35) return;
     this.accum = 0;
     const colorIdx = this.points.length % def.colors.length;
     this.points.push({ pos: new Vec2(x, y), life: 1, colorIndex: colorIdx });
@@ -44,6 +44,19 @@ export class TrailRenderer {
     ctx.globalCompositeOperation = 'lighter';
 
     if (!lowQuality) {
+      // Mega halo pass — widest, soft outline.
+      ctx.beginPath();
+      ctx.moveTo(this.points[0]!.pos.x, this.points[0]!.pos.y);
+      for (let i = 1; i < this.points.length; i++) {
+        ctx.lineTo(this.points[i]!.pos.x, this.points[i]!.pos.y);
+      }
+      ctx.lineWidth = 14;
+      ctx.strokeStyle = withAlpha(def.colors[0]!, 0.10);
+      ctx.shadowColor = def.colors[0]!;
+      ctx.shadowBlur = 22;
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
       // Outer halo pass — wider, lower alpha.
       ctx.beginPath();
       ctx.moveTo(this.points[0]!.pos.x, this.points[0]!.pos.y);
@@ -51,7 +64,7 @@ export class TrailRenderer {
         ctx.lineTo(this.points[i]!.pos.x, this.points[i]!.pos.y);
       }
       ctx.lineWidth = 8;
-      ctx.strokeStyle = withAlpha(def.colors[0]!, 0.18);
+      ctx.strokeStyle = withAlpha(def.colors[0]!, 0.22);
       ctx.shadowColor = def.colors[0]!;
       ctx.shadowBlur = 14;
       ctx.stroke();
@@ -65,10 +78,10 @@ export class TrailRenderer {
       const alpha = Math.max(0, b.life);
       const color = def.colors[b.colorIndex % def.colors.length]!;
       const grad = ctx.createLinearGradient(a.pos.x, a.pos.y, b.pos.x, b.pos.y);
-      grad.addColorStop(0, withAlpha(color, alpha * 0.45));
+      grad.addColorStop(0, withAlpha(color, alpha * 0.5));
       grad.addColorStop(1, withAlpha(color, alpha * 0.95));
       ctx.strokeStyle = grad;
-      ctx.lineWidth = 1.6 + b.life * 4.4;
+      ctx.lineWidth = 1.8 + b.life * 5;
       ctx.beginPath();
       ctx.moveTo(a.pos.x, a.pos.y);
       ctx.lineTo(b.pos.x, b.pos.y);
@@ -77,9 +90,9 @@ export class TrailRenderer {
 
     // Bright hot core on the freshest segments.
     if (this.points.length >= 2) {
-      const tail = Math.min(8, this.points.length - 1);
+      const tail = Math.min(10, this.points.length - 1);
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.4;
       ctx.beginPath();
       ctx.moveTo(
         this.points[this.points.length - 1 - tail]!.pos.x,
@@ -87,7 +100,7 @@ export class TrailRenderer {
       );
       for (let i = this.points.length - tail; i < this.points.length; i++) {
         const p = this.points[i]!;
-        ctx.globalAlpha = Math.max(0, p.life) * 0.7;
+        ctx.globalAlpha = Math.max(0, p.life) * 0.8;
         ctx.lineTo(p.pos.x, p.pos.y);
       }
       ctx.stroke();
@@ -97,4 +110,3 @@ export class TrailRenderer {
     ctx.restore();
   }
 }
-
