@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0a0524"/>
+      <stop offset="1" stop-color="#03040a"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00f3ff"/>
+      <stop offset="0.5" stop-color="#c566ff"/>
+      <stop offset="1" stop-color="#ff2bff"/>
+    </linearGradient>
+    <linearGradient id="pl1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#00f3ff"/><stop offset="1" stop-color="#00f3ff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="pl2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a45cff"/><stop offset="1" stop-color="#a45cff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="pl3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff9d2e"/><stop offset="1" stop-color="#ff9d2e" stop-opacity="0"/></linearGradient>
+    <filter id="bloom"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#bg)"/>
+
+  <!-- Modal -->
+  <rect x="160" y="60" width="960" height="600" rx="22" fill="#070c1c" opacity="0.95" stroke="#00f3ff" stroke-opacity="0.4" stroke-width="1.5"/>
+
+  <!-- Title -->
+  <text x="640" y="140" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="900" font-size="64" fill="url(#title)" filter="url(#bloom)">RUN ENDED</text>
+  <text x="640" y="140" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="900" font-size="64" fill="url(#title)">RUN ENDED</text>
+  <text x="640" y="178" text-anchor="middle" font-family="'Rajdhani', sans-serif" font-weight="500" font-size="17" fill="#a4f0ff">Crossed the finish line</text>
+
+  <!-- Podium -->
+  <g transform="translate(440 220)">
+    <rect width="400" height="240" rx="14" fill="#ffffff" fill-opacity="0.02" stroke="#ffffff" stroke-opacity="0.07"/>
+    <!-- 2nd: Phase -->
+    <g transform="translate(50 70)">
+      <text x="40" y="-2" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="700" font-size="14" letter-spacing="2" fill="#a45cff" filter="url(#bloom)">2ND</text>
+      <text x="40" y="22" text-anchor="middle" font-family="'Rajdhani', sans-serif" font-weight="700" font-size="14" fill="#eaffff">PHASE</text>
+      <text x="40" y="38" text-anchor="middle" font-family="'monospace', monospace" font-size="11" fill="#a4f0ff">02:34</text>
+      <rect x="8" y="50" width="64" height="100" fill="url(#pl2)"/>
+    </g>
+    <!-- 1st: You -->
+    <g transform="translate(168 30)">
+      <text x="40" y="-2" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="700" font-size="14" letter-spacing="2" fill="#00f3ff" filter="url(#bloom)">1ST</text>
+      <text x="40" y="22" text-anchor="middle" font-family="'Rajdhani', sans-serif" font-weight="800" font-size="14" fill="#00f3ff">PILOT_NEO (You)</text>
+      <text x="40" y="38" text-anchor="middle" font-family="'monospace', monospace" font-size="11" fill="#a4f0ff">02:18</text>
+      <rect x="8" y="50" width="64" height="160" fill="url(#pl1)"/>
+    </g>
+    <!-- 3rd: Sparky -->
+    <g transform="translate(286 100)">
+      <text x="40" y="-2" text-anchor="middle" font-family="'Orbitron', sans-serif" font-weight="700" font-size="14" letter-spacing="2" fill="#ff9d2e" filter="url(#bloom)">3RD</text>
+      <text x="40" y="22" text-anchor="middle" font-family="'Rajdhani', sans-serif" font-weight="700" font-size="14" fill="#eaffff">SPARKY</text>
+      <text x="40" y="38" text-anchor="middle" font-family="'monospace', monospace" font-size="11" fill="#a4f0ff">02:51</text>
+      <rect x="8" y="50" width="64" height="70" fill="url(#pl3)"/>
+    </g>
+  </g>
+
+  <!-- Stat grid -->
+  <g transform="translate(200 490)" font-family="'Rajdhani', sans-serif">
+    <g><rect width="190" height="76" rx="12" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.1"/><rect width="190" height="2" fill="#00f3ff" opacity="0.55"/><text x="14" y="28" font-size="11" letter-spacing="2" fill="#a4f0ff" font-weight="700">SCORE</text><text x="14" y="60" font-size="22" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">48,210</text></g>
+    <g transform="translate(210 0)"><rect width="190" height="76" rx="12" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.1"/><rect width="190" height="2" fill="#00f3ff" opacity="0.55"/><text x="14" y="28" font-size="11" letter-spacing="2" fill="#a4f0ff" font-weight="700">ALTITUDE</text><text x="14" y="60" font-size="22" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">3000 M</text></g>
+    <g transform="translate(420 0)"><rect width="190" height="76" rx="12" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.1"/><rect width="190" height="2" fill="#00f3ff" opacity="0.55"/><text x="14" y="28" font-size="11" letter-spacing="2" fill="#a4f0ff" font-weight="700">PEAK COMBO</text><text x="14" y="60" font-size="22" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">×8</text></g>
+    <g transform="translate(630 0)"><rect width="190" height="76" rx="12" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.1"/><rect width="190" height="2" fill="#00f3ff" opacity="0.55"/><text x="14" y="28" font-size="11" letter-spacing="2" fill="#a4f0ff" font-weight="700">SPARKS</text><text x="14" y="60" font-size="22" font-family="'Orbitron', sans-serif" font-weight="900" fill="#ffd400">+140</text></g>
+  </g>
+
+  <!-- Streak nudge -->
+  <g transform="translate(200 588)" font-family="'Rajdhani', sans-serif">
+    <rect width="880" height="32" rx="10" fill="#ff9d2e" fill-opacity="0.12" stroke="#ff9d2e" stroke-opacity="0.45"/>
+    <text x="440" y="22" text-anchor="middle" font-size="14" font-weight="600" fill="#eaffff">🔥 5-day streak — play tomorrow to extend it.</text>
+  </g>
+
+  <!-- CTAs -->
+  <g font-family="'Orbitron', sans-serif">
+    <g transform="translate(200 630)"><rect width="120" height="32" rx="16" fill="#00f3ff"/><text x="60" y="21" text-anchor="middle" font-weight="700" font-size="12" letter-spacing="2" fill="#001015">RETRY</text></g>
+    <g transform="translate(340 630)"><rect width="180" height="32" rx="16" fill="none" stroke="#ffffff" stroke-opacity="0.25"/><text x="90" y="21" text-anchor="middle" font-weight="700" font-size="12" letter-spacing="2" fill="#eaffff">DOUBLE SPARKS</text></g>
+    <g transform="translate(540 630)"><rect width="140" height="32" rx="16" fill="none" stroke="#ffffff" stroke-opacity="0.25"/><text x="70" y="21" text-anchor="middle" font-weight="700" font-size="12" letter-spacing="2" fill="#eaffff">MAIN MENU</text></g>
+  </g>
+</svg>

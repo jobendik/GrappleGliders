@@ -2,7 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SaveSystem, defaultSave } from '../src/systems/SaveSystem';
 import { ProgressionSystem, levelFromXP, xpForLevel } from '../src/systems/ProgressionSystem';
 import { UnlockSystem } from '../src/systems/UnlockSystem';
-import { LeaderboardSystem, LocalLeaderboardBackend } from '../src/systems/LeaderboardSystem';
+import {
+  LayeredLeaderboardBackend,
+  LeaderboardSystem,
+  LocalLeaderboardBackend,
+  RemoteLeaderboardBackend,
+  type LeaderboardBackend,
+} from '../src/systems/LeaderboardSystem';
+import type { LeaderboardSubmission } from '../src/systems/SaveSystem';
 
 class MemoryStorage {
   private map = new Map<string, string>();
@@ -200,5 +207,135 @@ describe('LeaderboardSystem', () => {
     const kai = save.data.leaderboardSubmissions.filter((s) => s.name === 'KAI');
     expect(kai).toHaveLength(1);
     expect(kai[0]!.score).toBe(1500);
+  });
+});
+
+describe('RemoteLeaderboardBackend', () => {
+  it('GET /leaderboard/{date} sanitizes the wire payload', async () => {
+    const fetchSpy = vi.fn(async () =>
+      new Response(
+        JSON.stringify([
+          { date: '2026-01-02', name: 'ASTRA', score: 9000, altitude: 900, seed: 1, timestamp: 100 },
+          { date: '2026-01-02', name: '<script>', score: 'bad', altitude: 100, seed: 2, timestamp: 200 },
+          'garbage',
+          null,
+        ]),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+    const backend = new RemoteLeaderboardBackend({ baseUrl: 'https://example.invalid' });
+    const result = await backend.fetchDaily('2026-01-02', 50);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.name).toBe('ASTRA');
+    const calls = fetchSpy.mock.calls as unknown as [string, RequestInit][];
+    const calledUrl = calls[0]![0];
+    expect(calledUrl).toContain('/leaderboard/2026-01-02');
+    expect(calledUrl).toContain('limit=50');
+    vi.unstubAllGlobals();
+  });
+
+  it('POST /leaderboard sends the submission as JSON with optional bearer auth', async () => {
+    const fetchSpy = vi.fn(async () => new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchSpy);
+    const backend = new RemoteLeaderboardBackend({
+      baseUrl: 'https://example.invalid',
+      apiKey: 'topsecret',
+    });
+    await backend.submitDaily({
+      date: '2026-01-02',
+      seed: 1,
+      name: 'ASTRA',
+      score: 12000,
+      altitude: 1200,
+      timestamp: 1000,
+    });
+    const calls = fetchSpy.mock.calls as unknown as [string, RequestInit][];
+    const [, init] = calls[0]!;
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer topsecret');
+    expect(JSON.parse(init.body as string)).toEqual({
+      date: '2026-01-02',
+      seed: 1,
+      name: 'ASTRA',
+      score: 12000,
+      altitude: 1200,
+      timestamp: 1000,
+    });
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('LayeredLeaderboardBackend', () => {
+  it('returns remote entries augmented with local-only ones', async () => {
+    const remoteRows: LeaderboardSubmission[] = [
+      { date: '2026-01-03', name: 'APEX', score: 30000, altitude: 3000, seed: 0, timestamp: 1 },
+      { date: '2026-01-03', name: 'NOVA', score: 20000, altitude: 2000, seed: 0, timestamp: 1 },
+    ];
+    const remote: LeaderboardBackend = {
+      fetchDaily: vi.fn(async () => remoteRows),
+      submitDaily: vi.fn(async () => undefined),
+    };
+    const save = new SaveSystem();
+    const local = new LocalLeaderboardBackend(save);
+    await local.submitDaily({
+      date: '2026-01-03',
+      name: 'YOU',
+      score: 25000,
+      altitude: 2500,
+      seed: 0,
+      timestamp: 2,
+    });
+    const layered = new LayeredLeaderboardBackend(remote, local);
+    const list = await layered.fetchDaily('2026-01-03', 50);
+    const names = list.map((s) => s.name);
+    expect(names).toContain('APEX');
+    expect(names).toContain('NOVA');
+    expect(names).toContain('YOU');
+  });
+
+  it('falls back to local entries when the remote fetch fails', async () => {
+    const remote: LeaderboardBackend = {
+      fetchDaily: vi.fn(async () => {
+        throw new Error('network');
+      }),
+      submitDaily: vi.fn(async () => undefined),
+    };
+    const save = new SaveSystem();
+    const local = new LocalLeaderboardBackend(save);
+    await local.submitDaily({
+      date: '2026-01-04',
+      name: 'SOLO',
+      score: 5000,
+      altitude: 500,
+      seed: 0,
+      timestamp: 1,
+    });
+    const layered = new LayeredLeaderboardBackend(remote, local);
+    const list = await layered.fetchDaily('2026-01-04', 10);
+    expect(list).toHaveLength(1);
+    expect(list[0]!.name).toBe('SOLO');
+  });
+
+  it('persists locally even when the remote submit throws', async () => {
+    const remote: LeaderboardBackend = {
+      fetchDaily: vi.fn(async () => []),
+      submitDaily: vi.fn(async () => {
+        throw new Error('remote down');
+      }),
+    };
+    const save = new SaveSystem();
+    const local = new LocalLeaderboardBackend(save);
+    const layered = new LayeredLeaderboardBackend(remote, local);
+    await layered.submitDaily({
+      date: '2026-01-05',
+      name: 'OFFLINE',
+      score: 7777,
+      altitude: 777,
+      seed: 0,
+      timestamp: 1,
+    });
+    expect(save.data.leaderboardSubmissions.find((s) => s.name === 'OFFLINE')?.score).toBe(7777);
+    expect(remote.submitDaily).toHaveBeenCalledOnce();
   });
 });
