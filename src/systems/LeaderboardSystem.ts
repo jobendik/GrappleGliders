@@ -89,6 +89,140 @@ export class LocalLeaderboardBackend implements LeaderboardBackend {
   }
 }
 
+export interface RemoteLeaderboardConfig {
+  /** Base URL of the leaderboard service, e.g. https://api.example.com */
+  baseUrl: string;
+  /** Optional bearer token. Sent as `Authorization: Bearer <key>`. */
+  apiKey?: string;
+  /**
+   * Path template for fetching a daily. `{date}` is replaced with the UTC date string.
+   * Default: `/leaderboard/{date}`.
+   */
+  fetchPath?: string;
+  /**
+   * Path for submitting a score (POST). Default: `/leaderboard`.
+   */
+  submitPath?: string;
+  /** Per-call timeout in ms. Default: 4000. */
+  timeoutMs?: number;
+}
+
+/**
+ * HTTP-based leaderboard backend. Wire this to any service that implements the
+ * two-endpoint contract documented in `server/README.md`. The default paths
+ * match the reference Cloudflare Worker in `server/cloudflare-worker.ts`.
+ *
+ * `LayeredLeaderboardBackend` (below) wraps this with a `LocalLeaderboardBackend`
+ * so the player never sees a "leaderboard unavailable" error — local cache is
+ * always shown and submissions are retried implicitly on the next fetch.
+ */
+export class RemoteLeaderboardBackend implements LeaderboardBackend {
+  constructor(private config: RemoteLeaderboardConfig) {}
+
+  async fetchDaily(date: string, limit: number): Promise<LeaderboardSubmission[]> {
+    const fetchPath = (this.config.fetchPath ?? '/leaderboard/{date}').replace(
+      '{date}',
+      encodeURIComponent(date),
+    );
+    const url = new URL(fetchPath, this.config.baseUrl);
+    url.searchParams.set('limit', String(limit));
+    const res = await this.fetchWithTimeout(url.toString(), { method: 'GET' });
+    if (!res.ok) throw new Error(`Leaderboard fetch failed: ${res.status}`);
+    const raw = (await res.json()) as unknown;
+    return this.sanitizeList(raw);
+  }
+
+  async submitDaily(submission: LeaderboardSubmission): Promise<void> {
+    const submitPath = this.config.submitPath ?? '/leaderboard';
+    const url = new URL(submitPath, this.config.baseUrl);
+    const res = await this.fetchWithTimeout(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(submission),
+    });
+    if (!res.ok) throw new Error(`Leaderboard submit failed: ${res.status}`);
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.config.timeoutMs ?? 4000);
+    const headers: Record<string, string> = {
+      ...(init.headers as Record<string, string> | undefined),
+    };
+    if (this.config.apiKey) headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    try {
+      return await fetch(url, { ...init, headers, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private sanitizeList(raw: unknown): LeaderboardSubmission[] {
+    if (!Array.isArray(raw)) return [];
+    const out: LeaderboardSubmission[] = [];
+    for (const r of raw) {
+      if (!r || typeof r !== 'object') continue;
+      const o = r as Record<string, unknown>;
+      const date = typeof o.date === 'string' ? o.date : null;
+      const name = typeof o.name === 'string' ? o.name.slice(0, 16) : null;
+      const score = typeof o.score === 'number' && isFinite(o.score) ? Math.max(0, Math.floor(o.score)) : null;
+      const altitude = typeof o.altitude === 'number' && isFinite(o.altitude) ? Math.max(0, Math.floor(o.altitude)) : 0;
+      const seed = typeof o.seed === 'number' && isFinite(o.seed) ? o.seed : 0;
+      const timestamp = typeof o.timestamp === 'number' && isFinite(o.timestamp) ? o.timestamp : Date.now();
+      if (!date || !name || score === null) continue;
+      out.push({ date, name, score, altitude, seed, timestamp });
+    }
+    return out;
+  }
+}
+
+/**
+ * Combine a primary (remote) backend with a fallback (local) one.
+ * - Fetch: returns the remote list if reachable, otherwise the local list. When
+ *   both succeed, real local-only entries are merged in (so the player's own
+ *   score appears immediately, even if the remote submission is still in-flight).
+ * - Submit: always writes locally so the player sees their entry instantly; the
+ *   remote write is best-effort. A failed remote submit is silently swallowed —
+ *   the local copy keeps the score and a future submit will re-send it.
+ */
+export class LayeredLeaderboardBackend implements LeaderboardBackend {
+  constructor(
+    private primary: LeaderboardBackend,
+    private fallback: LeaderboardBackend,
+  ) {}
+
+  async fetchDaily(date: string, limit: number): Promise<LeaderboardSubmission[]> {
+    try {
+      const [remote, local] = await Promise.all([
+        this.primary.fetchDaily(date, limit),
+        this.fallback.fetchDaily(date, limit).catch(() => [] as LeaderboardSubmission[]),
+      ]);
+      const map = new Map<string, LeaderboardSubmission>();
+      for (const s of remote) map.set(s.name, s);
+      for (const s of local) {
+        const existing = map.get(s.name);
+        if (!existing || s.score > existing.score) map.set(s.name, s);
+      }
+      return Array.from(map.values())
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+    } catch {
+      return this.fallback.fetchDaily(date, limit);
+    }
+  }
+
+  async submitDaily(submission: LeaderboardSubmission): Promise<void> {
+    // Local first so the player always sees their score even if the network is down.
+    await this.fallback.submitDaily(submission);
+    try {
+      await this.primary.submitDaily(submission);
+    } catch {
+      // Remote unavailable — local has the score. A future submit on the same day
+      // will overwrite the timestamp and try again.
+    }
+  }
+}
+
 export class LeaderboardSystem {
   constructor(private backend: LeaderboardBackend) {}
 

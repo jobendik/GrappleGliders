@@ -21,7 +21,12 @@ import { ProgressionSystem } from '../systems/ProgressionSystem';
 import { AchievementSystem } from '../systems/AchievementSystem';
 import { UnlockSystem } from '../systems/UnlockSystem';
 import { DailyChallengeSystem } from '../systems/DailyChallengeSystem';
-import { LeaderboardSystem, LocalLeaderboardBackend } from '../systems/LeaderboardSystem';
+import {
+  LayeredLeaderboardBackend,
+  LeaderboardSystem,
+  LocalLeaderboardBackend,
+  RemoteLeaderboardBackend,
+} from '../systems/LeaderboardSystem';
 import { HapticsSystem } from '../systems/HapticsSystem';
 
 import { AudioEngine } from '../audio/AudioEngine';
@@ -189,7 +194,7 @@ export class Game {
     this.achievements = new AchievementSystem(this.save);
     this.unlocks = new UnlockSystem(this.save);
     this.daily = new DailyChallengeSystem(this.save);
-    this.leaderboardSys = new LeaderboardSystem(new LocalLeaderboardBackend(this.save));
+    this.leaderboardSys = new LeaderboardSystem(this.buildLeaderboardBackend());
     this.toast = new ToastManager(this.toastRoot);
     this.mainMenu = new MainMenu(this.overlayRoot);
     this.pauseMenu = new PauseMenu(this.overlayRoot);
@@ -267,6 +272,28 @@ export class Game {
         }
       }
     })();
+  }
+
+  /**
+   * Pick the right backend at boot. When `VITE_LEADERBOARD_API_URL` is set we
+   * wrap the local backend with a `RemoteLeaderboardBackend` so the daily board
+   * shows real cross-player competition. Without the env var we keep the offline
+   * local-only ladder (which still mirrors via CrazyGames cloud save).
+   */
+  private buildLeaderboardBackend(): LocalLeaderboardBackend | LayeredLeaderboardBackend {
+    const local = new LocalLeaderboardBackend(this.save);
+    const apiUrl = import.meta.env.VITE_LEADERBOARD_API_URL;
+    if (!apiUrl) return local;
+    const apiKey = import.meta.env.VITE_LEADERBOARD_API_KEY as string | undefined;
+    const fetchPath = import.meta.env.VITE_LEADERBOARD_FETCH_PATH as string | undefined;
+    const submitPath = import.meta.env.VITE_LEADERBOARD_SUBMIT_PATH as string | undefined;
+    const remote = new RemoteLeaderboardBackend({
+      baseUrl: apiUrl,
+      ...(apiKey ? { apiKey } : {}),
+      ...(fetchPath ? { fetchPath } : {}),
+      ...(submitPath ? { submitPath } : {}),
+    });
+    return new LayeredLeaderboardBackend(remote, local);
   }
 
   /** Resolve the leaderboard display name for the current player. */
@@ -1187,6 +1214,7 @@ export class Game {
             this.sfx.unlock();
             this.haptics.trigger('unlock');
             this.screen.addFloatingText('MAGNET', cx, cy - 12, '#a45cff', { size: 14 });
+            this.toast.show('Magnet active — pulls in nearby sparks for 6 seconds.');
             break;
           case 'slow-pickup':
             this.slowLavaFrames = Math.max(this.slowLavaFrames, 600);
@@ -1194,6 +1222,7 @@ export class Game {
             this.sfx.unlock();
             this.haptics.trigger('unlock');
             this.screen.addFloatingText('SLOW LAVA', cx, cy - 12, '#a4f0ff', { size: 14 });
+            this.toast.show('Slow lava active — rising hazard at quarter speed.');
             break;
         }
       },

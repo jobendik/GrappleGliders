@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0a0524"/>
+      <stop offset="0.55" stop-color="#1a0c46"/>
+      <stop offset="1" stop-color="#ff2bff" stop-opacity="0.5"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00f3ff"/>
+      <stop offset="0.5" stop-color="#c566ff"/>
+      <stop offset="1" stop-color="#ff2bff"/>
+    </linearGradient>
+    <linearGradient id="lava" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd400"/>
+      <stop offset="0.5" stop-color="#ff7a1a"/>
+      <stop offset="1" stop-color="#ff255e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#00f3ff" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#00f3ff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="bloom">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <pattern id="grid" x="0" y="0" width="50" height="50" patternUnits="userSpaceOnUse">
+      <path d="M50 0 L0 0 0 50" fill="none" stroke="#1f1352" stroke-width="1" opacity="0.5"/>
+    </pattern>
+  </defs>
+
+  <rect width="800" height="600" fill="url(#sky)"/>
+  <rect width="800" height="600" fill="url(#grid)" opacity="0.5"/>
+
+  <!-- Sun -->
+  <circle cx="400" cy="440" r="160" fill="#ff7a1a" opacity="0.6" filter="url(#bloom)"/>
+  <circle cx="400" cy="440" r="115" fill="#ffd400" opacity="0.8"/>
+
+  <!-- Horizon -->
+  <line x1="0" y1="440" x2="800" y2="440" stroke="#ff2bff" stroke-width="2" opacity="0.5"/>
+  <line x1="0" y1="470" x2="800" y2="470" stroke="#ff2bff" stroke-width="1" opacity="0.3"/>
+
+  <!-- Skyline -->
+  <g fill="#03040a">
+    <rect x="40" y="330" width="40" height="110"/>
+    <rect x="100" y="290" width="56" height="150"/>
+    <rect x="170" y="350" width="34" height="90"/>
+    <rect x="640" y="310" width="50" height="130"/>
+    <rect x="710" y="270" width="60" height="170"/>
+    <polygon points="540,440 580,290 620,440"/>
+  </g>
+
+  <!-- Floating platforms -->
+  <rect x="120" y="220" width="100" height="14" fill="#00f3ff" filter="url(#bloom)" opacity="0.9"/>
+  <rect x="120" y="220" width="100" height="14" fill="#00f3ff"/>
+  <rect x="560" y="170" width="120" height="14" fill="#a45cff" filter="url(#bloom)" opacity="0.9"/>
+  <rect x="560" y="170" width="120" height="14" fill="#a45cff"/>
+  <circle cx="340" cy="150" r="22" fill="#a45cff" filter="url(#bloom)" opacity="0.9"/>
+  <circle cx="340" cy="150" r="15" fill="#a45cff"/>
+
+  <!-- Hook line -->
+  <line x1="290" y1="330" x2="340" y2="150" stroke="#00f3ff" stroke-width="3" opacity="0.85"/>
+  <line x1="290" y1="330" x2="340" y2="150" stroke="#ffffff" stroke-width="1" opacity="0.6"/>
+
+  <!-- Player glider -->
+  <g transform="translate(290 330)">
+    <circle r="46" fill="url(#glow)"/>
+    <polygon points="0,-24 22,18 0,9 -22,18" fill="#00f3ff" filter="url(#bloom)"/>
+    <polygon points="0,-24 22,18 0,9 -22,18" fill="#ffffff" opacity="0.9"/>
+  </g>
+
+  <!-- Trail -->
+  <path d="M 240 390 Q 265 360 290 330" fill="none" stroke="#ff2bff" stroke-width="6" opacity="0.55" filter="url(#bloom)"/>
+  <path d="M 240 390 Q 265 360 290 330" fill="none" stroke="#00f3ff" stroke-width="3" opacity="0.9"/>
+
+  <!-- Title -->
+  <g font-family="'Orbitron', 'Arial Black', sans-serif" font-weight="900">
+    <text x="40" y="100" font-size="76" fill="url(#title)" letter-spacing="-1.4">GRAPPLE</text>
+    <text x="40" y="170" font-size="76" fill="url(#title)" letter-spacing="-1.4">GLIDERS</text>
+  </g>
+
+  <!-- Lava base -->
+  <rect x="0" y="560" width="800" height="40" fill="url(#lava)" opacity="0.9"/>
+  <path d="M 0 560 Q 80 545 160 560 T 320 560 T 480 560 T 640 560 T 800 560" fill="none" stroke="#fff7c2" stroke-width="2" opacity="0.7"/>
+</svg>

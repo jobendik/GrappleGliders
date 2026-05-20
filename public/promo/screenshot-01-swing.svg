@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0a0524"/>
+      <stop offset="0.65" stop-color="#1a0c46"/>
+      <stop offset="1" stop-color="#ff2bff" stop-opacity="0.45"/>
+    </linearGradient>
+    <linearGradient id="lava" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffd400"/>
+      <stop offset="0.5" stop-color="#ff7a1a"/>
+      <stop offset="1" stop-color="#ff255e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#00f3ff" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#00f3ff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="bloom"><feGaussianBlur stdDeviation="5"/></filter>
+    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
+      <path d="M56 0 L0 0 0 56" fill="none" stroke="#1f1352" stroke-width="1" opacity="0.4"/>
+    </pattern>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#sky)"/>
+  <rect width="1280" height="720" fill="url(#grid)" opacity="0.4"/>
+
+  <!-- Distant skyline / sun -->
+  <circle cx="640" cy="560" r="220" fill="#ff7a1a" opacity="0.45" filter="url(#bloom)"/>
+  <circle cx="640" cy="560" r="150" fill="#ffd400" opacity="0.6"/>
+  <g fill="#02030a" opacity="0.85">
+    <rect x="40" y="430" width="42" height="180"/>
+    <rect x="100" y="380" width="58" height="230"/>
+    <rect x="180" y="450" width="36" height="160"/>
+    <rect x="240" y="400" width="50" height="210"/>
+    <rect x="1100" y="370" width="60" height="240"/>
+    <rect x="1180" y="430" width="46" height="180"/>
+    <polygon points="950,610 990,400 1030,610"/>
+  </g>
+
+  <!-- HUD -->
+  <g font-family="'Rajdhani', 'Arial', sans-serif">
+    <rect x="20" y="20" width="270" height="100" rx="14" fill="#070c1c" opacity="0.78" stroke="#00f3ff" stroke-opacity="0.35"/>
+    <text x="40" y="48" font-size="12" letter-spacing="3" fill="#a4f0ff" font-weight="700">ALTITUDE</text>
+    <text x="40" y="92" font-size="42" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">1842 M</text>
+    <text x="200" y="48" font-size="11" letter-spacing="3" fill="#a4f0ff" font-weight="700">BEST</text>
+    <text x="200" y="92" font-size="22" font-family="'Orbitron', sans-serif" font-weight="700" fill="#eaffff">1605 M</text>
+
+    <rect x="990" y="20" width="270" height="160" rx="14" fill="#070c1c" opacity="0.78" stroke="#00f3ff" stroke-opacity="0.35"/>
+    <text x="1010" y="48" font-size="12" letter-spacing="3" fill="#a4f0ff" font-weight="700">SCORE</text>
+    <text x="1010" y="92" font-size="42" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">24,910</text>
+    <text x="1170" y="48" font-size="11" letter-spacing="3" fill="#a4f0ff" font-weight="700">BEST</text>
+    <text x="1170" y="92" font-size="22" font-family="'Orbitron', sans-serif" font-weight="700" fill="#eaffff">31,200</text>
+    <text x="1010" y="128" font-size="11" letter-spacing="3" fill="#a4f0ff" font-weight="700">DASH</text>
+    <g transform="translate(1080 117)">
+      <circle r="7" fill="#ff2bff"/>
+      <circle cx="20" r="7" fill="#ff2bff"/>
+      <circle cx="40" r="7" fill="#00f3ff" opacity="0.4" stroke="#00f3ff" stroke-opacity="0.7"/>
+    </g>
+
+    <text x="640" y="60" text-anchor="middle" font-size="34" font-family="'Orbitron', sans-serif" font-weight="900" fill="#ff9d2e" filter="url(#bloom)">×4 COMBO</text>
+    <text x="640" y="60" text-anchor="middle" font-size="34" font-family="'Orbitron', sans-serif" font-weight="900" fill="#ff9d2e">×4 COMBO</text>
+  </g>
+
+  <!-- Platforms -->
+  <g>
+    <rect x="180" y="240" width="160" height="18" fill="#00f3ff" filter="url(#bloom)" opacity="0.85"/>
+    <rect x="180" y="240" width="160" height="18" fill="#00f3ff"/>
+    <rect x="940" y="180" width="180" height="18" fill="#a45cff" filter="url(#bloom)" opacity="0.85"/>
+    <rect x="940" y="180" width="180" height="18" fill="#a45cff"/>
+    <circle cx="800" cy="380" r="30" fill="#a45cff" filter="url(#bloom)" opacity="0.85"/>
+    <circle cx="800" cy="380" r="22" fill="#a45cff"/>
+    <rect x="380" y="490" width="150" height="18" fill="#00f3ff" filter="url(#bloom)" opacity="0.85"/>
+    <rect x="380" y="490" width="150" height="18" fill="#00f3ff"/>
+  </g>
+
+  <!-- Spike hazard -->
+  <g fill="#ff255e">
+    <polygon points="600,520 612,500 624,520 636,500 648,520 660,500 672,520 684,500 696,520 708,500 720,520"/>
+  </g>
+
+  <!-- Trail -->
+  <path d="M 350 600 Q 420 540 520 460 Q 600 400 700 380" fill="none" stroke="#ff2bff" stroke-width="12" opacity="0.5" filter="url(#bloom)"/>
+  <path d="M 350 600 Q 420 540 520 460 Q 600 400 700 380" fill="none" stroke="#00f3ff" stroke-width="5" opacity="0.9"/>
+
+  <!-- Grapple line -->
+  <line x1="700" y1="380" x2="800" y2="380" stroke="#00f3ff" stroke-width="3" opacity="0.9"/>
+
+  <!-- Player -->
+  <g transform="translate(700 380)">
+    <circle r="56" fill="url(#glow)"/>
+    <g transform="rotate(-35)">
+      <polygon points="0,-28 26,22 0,12 -26,22" fill="#00f3ff" filter="url(#bloom)"/>
+      <polygon points="0,-28 26,22 0,12 -26,22" fill="#ffffff" opacity="0.9"/>
+    </g>
+  </g>
+
+  <!-- Particles -->
+  <g fill="#ffd400">
+    <circle cx="520" cy="520" r="3" opacity="0.7"/>
+    <circle cx="530" cy="540" r="2" opacity="0.6"/>
+    <circle cx="500" cy="510" r="2.5" opacity="0.5"/>
+    <circle cx="475" cy="530" r="2" opacity="0.4"/>
+  </g>
+
+  <!-- Lava at the bottom -->
+  <rect x="0" y="650" width="1280" height="70" fill="url(#lava)" opacity="0.9"/>
+  <path d="M 0 650 Q 80 632 160 650 T 320 650 T 480 650 T 640 650 T 800 650 T 960 650 T 1120 650 T 1280 650" fill="none" stroke="#fff7c2" stroke-width="3" opacity="0.7"/>
+</svg>
