@@ -50,7 +50,7 @@ import { getSkin } from '../content/skins';
 import { getHook } from '../content/hooks';
 import { getTrail } from '../content/trails';
 import { clamp } from '../utils/math';
-import { withAlpha as withAlphaColor, mix as mixColor } from '../utils/color';
+import { withAlpha as withAlphaColor, mix as mixColor, lighten } from '../utils/color';
 import { utcDateKey } from '../utils/format';
 
 const WORLD_WIDTH = 1200;
@@ -472,7 +472,7 @@ export class Game {
       const swinging = this.player.hook.state === 'attached';
       if (speed > 7 || swinging) {
         const speedRatio = Math.min(1, speed / 22);
-        const emitChance = swinging ? 0.5 : 0.35 + speedRatio * 0.5;
+        const emitChance = swinging ? 0.7 : 0.45 + speedRatio * 0.5;
         if (Math.random() < emitChance) {
           const vx = -this.player.vel.x * 0.18 + (Math.random() - 0.5) * 1.2;
           const vy = -this.player.vel.y * 0.18 + (Math.random() - 0.5) * 1.2;
@@ -484,7 +484,27 @@ export class Game {
             vy,
             skin.glow,
           );
+          // Occasional hot spark trail at top speed
+          if (speedRatio > 0.7 && Math.random() < 0.3) {
+            const skin2 = getSkin(this.save.data.equippedSkin);
+            this.particles.hotSpark(
+              this.player.pos.x - this.player.vel.x * 0.8,
+              this.player.pos.y - this.player.vel.y * 0.8,
+              vx * 0.5,
+              vy * 0.5,
+              skin2.glow,
+              0.4,
+            );
+          }
         }
+      }
+      // Atmospheric dust motes drifting up around the player area — sells
+      // depth and altitude. Very rare, doesn't compete with combat particles.
+      if (Math.random() < 0.05) {
+        const offX = (Math.random() - 0.5) * this.renderer.cssWidth * 1.2;
+        const offY = (Math.random() - 0.3) * this.renderer.cssHeight * 0.8;
+        const themeAccent = this.themes.current.accent;
+        this.particles.mote(this.camera.position.x + offX, this.camera.position.y + offY, themeAccent);
       }
     }
 
@@ -542,16 +562,41 @@ export class Game {
 
   private celebrateMilestone(altitude: number): void {
     if (!this.player) return;
+    // Big bold callout
     this.screen.addFloatingText(
       `${altitude}M`,
       this.player.pos.x,
       this.player.pos.y - 70,
       '#ffd400',
-      { size: 32, life: 1.6, vy: -1.6 },
+      { size: 36, life: 1.8, vy: -1.6, bold: true },
     );
-    this.particles.burst(this.player.pos.x, this.player.pos.y - 30, 18, '#ffd400', { speed: 0.9 });
+    // Multi-ring shockwave + radial burst + sparkles
+    this.particles.shockwave(this.player.pos.x, this.player.pos.y - 30, '#ffd400', {
+      size: 30,
+      life: 0.8,
+      thickness: 5,
+    });
+    this.particles.shockwave(this.player.pos.x, this.player.pos.y - 30, '#ffffff', {
+      size: 18,
+      life: 0.6,
+      thickness: 3,
+    });
+    this.particles.burst(this.player.pos.x, this.player.pos.y - 30, 22, '#ffd400', { speed: 1.1, life: 1.2 });
+    this.particles.sparkle(this.player.pos.x, this.player.pos.y - 30, '#ffd400', { size: 12, life: 1.4 });
+    // Fireworks-style scattering sparkles around the milestone area
+    for (let k = 0; k < 8; k++) {
+      const a = Math.random() * Math.PI * 2;
+      const dist = 30 + Math.random() * 80;
+      const px = this.player.pos.x + Math.cos(a) * dist;
+      const py = this.player.pos.y - 30 + Math.sin(a) * dist;
+      this.particles.sparkle(px, py, k % 2 === 0 ? '#ffd400' : '#ff9d2e', {
+        size: 6 + Math.random() * 4,
+        life: 0.6 + Math.random() * 0.4,
+      });
+    }
     this.sfx.combo(Math.min(8, Math.floor(altitude / 500) + 2));
-    this.camera.flash(0.18);
+    this.camera.flash(0.22);
+    this.screen.pulseBloom(0.4);
     this.haptics.trigger('comboMilestone');
     // Mid-run Sparks reward at major milestones.
     if (altitude >= 500 && altitude % 500 === 0) {
@@ -562,8 +607,15 @@ export class Game {
         this.player.pos.x,
         this.player.pos.y - 38,
         '#ffd400',
-        { size: 14, life: 1.4 },
+        { size: 16, life: 1.4, bold: true },
       );
+      // Even bigger flourish for major milestones
+      this.particles.shockwave(this.player.pos.x, this.player.pos.y - 30, '#ff9d2e', {
+        size: 44,
+        life: 1,
+        thickness: 4,
+      });
+      this.camera.shake(6);
     }
   }
 
@@ -586,8 +638,29 @@ export class Game {
 
   private render(dt: number): void {
     const theme = this.themes.current;
+    const reduced = this.save.data.settings.reducedMotion;
     this.renderer.clear(theme.skyBottom);
-    this.background.draw(this.renderer, this.camera, theme, this.framesSinceStart, this.lowQuality || this.save.data.settings.reducedMotion);
+    this.background.draw(this.renderer, this.camera, theme, this.framesSinceStart, this.lowQuality || reduced);
+
+    // Update screen-effect intensities driven by player state.
+    if (this.player) {
+      const speed = this.player.vel.len();
+      // Speed intensity ramps in from speed 14..30 (~ swing fling territory).
+      const targetSpeed = Math.max(0, Math.min(1, (speed - 14) / 16));
+      // Smooth ramp; recompute every frame.
+      this.screen.speedIntensity =
+        this.screen.speedIntensity + (targetSpeed - this.screen.speedIntensity) * 0.12;
+      if (!this.lowQuality && !reduced && this.screen.speedIntensity > 0.15) {
+        this.screen.emitSpeedLines(this.screen.speedIntensity, this.renderer.cssWidth, this.renderer.cssHeight);
+      }
+      // Combo tint follows current combo, fading naturally.
+      if (this.combo.combo >= 2) {
+        const t = Math.min(1, (this.combo.combo - 1) / 8);
+        const tintColor =
+          this.combo.combo >= 6 ? '#ff2bff' : this.combo.combo >= 4 ? '#ff9d2e' : '#ffd400';
+        this.screen.setComboTint(tintColor, 0.3 + t * 0.5);
+      }
+    }
 
     if (this.world && this.player) {
       this.renderer.pushCamera(this.camera);
@@ -633,6 +706,8 @@ export class Game {
       if (this.usesLava()) this.drawLavaVignette();
       // Shield indicator near player
       if (this.player.shield > 0) this.drawShieldHalo();
+      // Magnet halo — rotating orbit ring around the player while active.
+      if (this.player.magnetFrames > 0) this.drawMagnetHalo();
     }
     this.screen.drawScreen(this.renderer, this.camera);
   }
@@ -668,8 +743,8 @@ export class Game {
   private drawLavaVignette(): void {
     if (!this.player) return;
     const distance = this.killY - this.player.pos.y;
-    if (distance > 560) return;
-    const intensity = Math.max(0, Math.min(1, 1 - distance / 560));
+    if (distance > 620) return;
+    const intensity = Math.max(0, Math.min(1, 1 - distance / 620));
     const ctx = this.renderer.ctx;
     ctx.save();
     const w = this.renderer.cssWidth;
@@ -681,26 +756,43 @@ export class Game {
       h * 0.15,
       w / 2,
       h * 1.05,
-      h * 1.05,
+      h * 1.1,
     );
-    grad.addColorStop(0, `rgba(255,80,40,${0.55 * intensity})`);
-    grad.addColorStop(0.55, `rgba(255,37,94,${0.32 * intensity})`);
+    grad.addColorStop(0, `rgba(255,80,40,${0.7 * intensity})`);
+    grad.addColorStop(0.55, `rgba(255,37,94,${0.38 * intensity})`);
     grad.addColorStop(1, 'rgba(255,37,94,0)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
 
     // Thin pulsing band along the bottom warning of imminent danger.
-    if (intensity > 0.45) {
+    if (intensity > 0.4) {
       const pulse = 0.55 + Math.sin(this.framesSinceStart * 0.22) * 0.45;
-      const band = ctx.createLinearGradient(0, h - 60, 0, h);
+      const band = ctx.createLinearGradient(0, h - 80, 0, h);
       band.addColorStop(0, 'rgba(255,80,40,0)');
-      band.addColorStop(1, `rgba(255,200,60,${0.4 * intensity * pulse})`);
+      band.addColorStop(1, `rgba(255,200,60,${0.5 * intensity * pulse})`);
       ctx.fillStyle = band;
-      ctx.fillRect(0, h - 60, w, 60);
+      ctx.fillRect(0, h - 80, w, 80);
     }
+
+    // Side-edge heat tendrils — vertical orange bars that pulse from the sides.
+    if (intensity > 0.55) {
+      const pulse = 0.55 + Math.sin(this.framesSinceStart * 0.16) * 0.45;
+      const sideA = (intensity - 0.55) * 0.6 * pulse;
+      const sideGradL = ctx.createLinearGradient(0, h / 2, 60, h / 2);
+      sideGradL.addColorStop(0, `rgba(255,80,40,${sideA})`);
+      sideGradL.addColorStop(1, 'rgba(255,80,40,0)');
+      ctx.fillStyle = sideGradL;
+      ctx.fillRect(0, 0, 60, h);
+      const sideGradR = ctx.createLinearGradient(w - 60, h / 2, w, h / 2);
+      sideGradR.addColorStop(0, 'rgba(255,80,40,0)');
+      sideGradR.addColorStop(1, `rgba(255,80,40,${sideA})`);
+      ctx.fillStyle = sideGradR;
+      ctx.fillRect(w - 60, 0, 60, h);
+    }
+
     // High-danger full-screen flash (subtle).
     if (intensity > 0.75 && Math.floor(this.framesSinceStart * 0.3) % 2 === 0) {
-      ctx.fillStyle = `rgba(255,37,94,${(intensity - 0.75) * 0.35})`;
+      ctx.fillStyle = `rgba(255,37,94,${(intensity - 0.75) * 0.45})`;
       ctx.fillRect(0, 0, w, h);
     }
     ctx.restore();
@@ -711,21 +803,98 @@ export class Game {
     const ctx = this.renderer.ctx;
     this.renderer.pushCamera(this.camera);
     const pulse = 0.6 + Math.sin(this.framesSinceStart * 0.2) * 0.4;
-    ctx.strokeStyle = `rgba(0,255,138,${0.5 + pulse * 0.3})`;
-    ctx.lineWidth = 2;
+    const px = this.player.pos.x;
+    const py = this.player.pos.y;
+    const baseR = this.player.radius + 8 + pulse * 3;
+
+    // Outer soft glow
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const halo = ctx.createRadialGradient(px, py, baseR * 0.6, px, py, baseR * 2);
+    halo.addColorStop(0, `rgba(0,255,138,${0.3 + pulse * 0.2})`);
+    halo.addColorStop(0.7, 'rgba(0,255,138,0.1)');
+    halo.addColorStop(1, 'rgba(0,255,138,0)');
+    ctx.fillStyle = halo;
     ctx.beginPath();
-    ctx.arc(this.player.pos.x, this.player.pos.y, this.player.radius + 6 + pulse * 2, 0, Math.PI * 2);
+    ctx.arc(px, py, baseR * 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Hexagonal energy shell — rotates slowly.
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(this.framesSinceStart * 0.02);
+    ctx.strokeStyle = `rgba(0,255,138,${0.6 + pulse * 0.3})`;
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const x = Math.cos(a) * baseR;
+      const y = Math.sin(a) * baseR;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
     ctx.stroke();
+    ctx.restore();
+
     if (this.player.shield > 1) {
+      ctx.strokeStyle = `rgba(0,255,138,${0.4 + pulse * 0.3})`;
+      ctx.lineWidth = 1.4;
       ctx.beginPath();
-      ctx.arc(this.player.pos.x, this.player.pos.y, this.player.radius + 10 + pulse * 2, 0, Math.PI * 2);
+      ctx.arc(px, py, baseR + 6, 0, Math.PI * 2);
       ctx.stroke();
     }
     this.renderer.popCamera();
   }
 
+  /** Rotating magenta orbital ring around the player while magnet is active. */
+  private drawMagnetHalo(): void {
+    if (!this.player) return;
+    const ctx = this.renderer.ctx;
+    this.renderer.pushCamera(this.camera);
+    const px = this.player.pos.x;
+    const py = this.player.pos.y;
+    const r = this.player.radius + 14;
+    const time = this.framesSinceStart;
+    // Glow halo
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const halo = ctx.createRadialGradient(px, py, r * 0.5, px, py, r * 2.2);
+    halo.addColorStop(0, 'rgba(164,92,255,0.25)');
+    halo.addColorStop(0.7, 'rgba(164,92,255,0.08)');
+    halo.addColorStop(1, 'rgba(164,92,255,0)');
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(px, py, r * 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    // Two orbiting "magnet" dots
+    for (let k = 0; k < 4; k++) {
+      const angle = time * 0.08 + (k * Math.PI) / 2;
+      const ox = px + Math.cos(angle) * r;
+      const oy = py + Math.sin(angle) * r * 0.45;
+      const dotGrad = ctx.createRadialGradient(ox, oy, 0, ox, oy, 4);
+      dotGrad.addColorStop(0, '#ffffff');
+      dotGrad.addColorStop(0.5, '#a45cff');
+      dotGrad.addColorStop(1, 'rgba(164,92,255,0)');
+      ctx.fillStyle = dotGrad;
+      ctx.beginPath();
+      ctx.arc(ox, oy, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Tilted orbit line
+    ctx.strokeStyle = 'rgba(164,92,255,0.5)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.ellipse(px, py, r, r * 0.45, time * 0.02, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+    this.renderer.popCamera();
+  }
+
   private drawObstacles(obstacles: Obstacle[], _dt: number): void {
     const ctx = this.renderer.ctx;
+    const time = this.framesSinceStart;
     for (const o of obstacles) {
       const cx = o.x + o.width / 2;
       const cy = o.y + o.height / 2;
@@ -733,16 +902,71 @@ export class Game {
       const pulse = 0.6 + Math.sin(o.pulse) * 0.4;
       const alpha = o.unstableTriggered ? Math.max(0, 1 - o.unstableTimer / 24) : 1;
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = o.color;
-      if (!this.lowQuality) {
-        ctx.shadowColor = o.color;
-        ctx.shadowBlur = (o.kind === 'energy' ? 22 : 10) * pulse;
-      }
+
       if (o.kind === 'energy') {
+        // Energy node: outer pulsing halo, swirling orbit ring, hot core.
+        const r = Math.max(o.width, o.height) / 2 + Math.sin(o.pulse) * 3;
+        if (!this.lowQuality) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          // Outer aura
+          const aura = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 3.5);
+          aura.addColorStop(0, withAlphaColor(o.color, 0.65 * pulse));
+          aura.addColorStop(0.4, withAlphaColor(o.color, 0.22 * pulse));
+          aura.addColorStop(1, withAlphaColor(o.color, 0));
+          ctx.fillStyle = aura;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r * 3.5, 0, Math.PI * 2);
+          ctx.fill();
+          // Orbit ring
+          ctx.strokeStyle = withAlphaColor('#ffffff', 0.55 * pulse);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, r * 1.6, r * 0.55, time * 0.03, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = withAlphaColor(o.color, 0.7);
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, r * 1.45, r * 0.5, time * 0.03 + Math.PI / 3, 0, Math.PI * 2);
+          ctx.stroke();
+          // Orbiting "electrons" — two small dots on each ring
+          for (let k = 0; k < 2; k++) {
+            const phase = time * 0.06 + k * Math.PI;
+            const ox = cx + Math.cos(phase) * r * 1.6;
+            const oy = cy + Math.sin(phase) * r * 0.55;
+            ctx.fillStyle = '#ffffff';
+            ctx.beginPath();
+            ctx.arc(ox, oy, 1.4, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          ctx.restore();
+        }
+        // Core fill — bright white inside, color outside.
+        const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+        core.addColorStop(0, '#ffffff');
+        core.addColorStop(0.4, o.color);
+        core.addColorStop(1, withAlphaColor(o.color, 0.85));
+        ctx.fillStyle = core;
+        if (!this.lowQuality) {
+          ctx.shadowColor = o.color;
+          ctx.shadowBlur = 20 * pulse;
+        }
         ctx.beginPath();
-        ctx.arc(cx, cy, Math.max(o.width, o.height) / 2 + Math.sin(o.pulse) * 3, 0, Math.PI * 2);
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
         ctx.fill();
+        ctx.shadowBlur = 0;
+        // Occasional crackle spark
+        if (!this.lowQuality && Math.random() < 0.08) {
+          const a = Math.random() * Math.PI * 2;
+          const sp = 1.5 + Math.random() * 2;
+          this.particles.hotSpark(cx, cy, Math.cos(a) * sp, Math.sin(a) * sp, o.color, 0.3);
+        }
       } else if (o.kind === 'spike') {
+        // Spike: gradient blade, pulsing menace.
+        ctx.fillStyle = o.color;
+        if (!this.lowQuality) {
+          ctx.shadowColor = o.color;
+          ctx.shadowBlur = 14 * pulse;
+        }
         ctx.beginPath();
         for (let i = 0; i < 4; i++) {
           const x = o.x + (i * o.width) / 4 + o.width / 8;
@@ -751,34 +975,195 @@ export class Game {
           ctx.lineTo(x + 5, o.y + o.height);
         }
         ctx.fill();
+        // Bright tips
+        if (!this.lowQuality) {
+          ctx.fillStyle = withAlphaColor('#ffffff', 0.7 * pulse);
+          for (let i = 0; i < 4; i++) {
+            const x = o.x + (i * o.width) / 4 + o.width / 8;
+            ctx.beginPath();
+            ctx.arc(x, o.y, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        // Subtle warning band underneath (only when on camera and close to player)
+        ctx.shadowBlur = 0;
       } else if (o.kind === 'drone') {
+        // Drone: body with led, exhaust trail, scanning rail line.
+        ctx.fillStyle = mixColor(o.color, '#000000', 0.3);
+        if (!this.lowQuality) {
+          ctx.shadowColor = o.color;
+          ctx.shadowBlur = 10 * pulse;
+        }
         ctx.fillRect(o.x, o.y, o.width, o.height);
-        ctx.strokeStyle = o.color;
+        // Bright edge highlight (top)
+        ctx.fillStyle = o.color;
+        ctx.fillRect(o.x, o.y, o.width, 2);
+        // Scanning rail
+        ctx.strokeStyle = withAlphaColor(o.color, 0.7);
         ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.moveTo(o.x - 6, o.y + o.height / 2);
-        ctx.lineTo(o.x + o.width + 6, o.y + o.height / 2);
+        ctx.moveTo(o.x - 8, o.y + o.height / 2);
+        ctx.lineTo(o.x + o.width + 8, o.y + o.height / 2);
         ctx.stroke();
+        // Scanner dot sweep
+        if (!this.lowQuality) {
+          const sweep = ((Math.sin(time * 0.06) * 0.5 + 0.5) * (o.width + 16)) - 8;
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(o.x + sweep, o.y + o.height / 2, 1.6, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        // Red LED bottom-right
+        ctx.fillStyle = '#ff4444';
+        ctx.beginPath();
+        ctx.arc(o.x + o.width - 3, o.y + o.height - 3, 1.4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
       } else if (o.kind === 'spark') {
+        // Spark: rotating diamond crystal with halo. Big visual reward signal.
         const bob = Math.sin(o.pulse * 3) * 3;
+        const r = 6 + Math.sin(o.pulse) * 1.4;
+        const drawY = cy + bob;
+        if (!this.lowQuality) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          const halo = ctx.createRadialGradient(cx, drawY, 0, cx, drawY, r * 4);
+          halo.addColorStop(0, withAlphaColor(o.color, 0.8));
+          halo.addColorStop(0.4, withAlphaColor(o.color, 0.3));
+          halo.addColorStop(1, withAlphaColor(o.color, 0));
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(cx, drawY, r * 4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        // Rotating diamond
+        ctx.save();
+        ctx.translate(cx, drawY);
+        ctx.rotate(time * 0.04);
+        const grad = ctx.createLinearGradient(0, -r, 0, r);
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(0.5, o.color);
+        grad.addColorStop(1, mixColor(o.color, '#000000', 0.3));
+        ctx.fillStyle = grad;
+        if (!this.lowQuality) {
+          ctx.shadowColor = o.color;
+          ctx.shadowBlur = 12;
+        }
         ctx.beginPath();
-        ctx.arc(cx, cy + bob, 6 + Math.sin(o.pulse) * 1.4, 0, Math.PI * 2);
+        ctx.moveTo(0, -r * 1.2);
+        ctx.lineTo(r, 0);
+        ctx.lineTo(0, r * 1.2);
+        ctx.lineTo(-r, 0);
+        ctx.closePath();
         ctx.fill();
         ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 0.9;
         ctx.stroke();
+        ctx.restore();
+        // Cross-glint
+        if (!this.lowQuality) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.strokeStyle = withAlphaColor('#ffffff', 0.7);
+          ctx.lineWidth = 0.7;
+          const beam = r * 2.4;
+          ctx.beginPath();
+          ctx.moveTo(cx - beam, drawY);
+          ctx.lineTo(cx + beam, drawY);
+          ctx.moveTo(cx, drawY - beam);
+          ctx.lineTo(cx, drawY + beam);
+          ctx.stroke();
+          ctx.restore();
+        }
+        ctx.shadowBlur = 0;
       } else if (o.kind === 'shield-pickup' || o.kind === 'magnet-pickup' || o.kind === 'slow-pickup') {
+        // Pickup: bobbing orb with concentric ring and rotating arc segments.
         const bob = Math.sin(o.pulse * 2) * 4;
+        const r = Math.max(o.width, o.height) / 2;
+        const drawY = cy + bob;
+        if (!this.lowQuality) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          const halo = ctx.createRadialGradient(cx, drawY, 0, cx, drawY, r * 3);
+          halo.addColorStop(0, withAlphaColor(o.color, 0.7));
+          halo.addColorStop(0.5, withAlphaColor(o.color, 0.2));
+          halo.addColorStop(1, withAlphaColor(o.color, 0));
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(cx, drawY, r * 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+        // Orb body
+        const orb = ctx.createRadialGradient(cx, drawY, 0, cx, drawY, r);
+        orb.addColorStop(0, '#ffffff');
+        orb.addColorStop(0.5, o.color);
+        orb.addColorStop(1, mixColor(o.color, '#000000', 0.3));
+        ctx.fillStyle = orb;
+        if (!this.lowQuality) {
+          ctx.shadowColor = o.color;
+          ctx.shadowBlur = 18 * pulse;
+        }
         ctx.beginPath();
-        ctx.arc(cx, cy + bob, Math.max(o.width, o.height) / 2, 0, Math.PI * 2);
+        ctx.arc(cx, drawY, r, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
+        ctx.shadowBlur = 0;
+        // Rotating arc segments (orbit indicator)
+        if (!this.lowQuality) {
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.6;
+          const baseRot = time * 0.06;
+          for (let k = 0; k < 2; k++) {
+            ctx.beginPath();
+            ctx.arc(cx, drawY, r + 3, baseRot + k * Math.PI, baseRot + k * Math.PI + Math.PI * 0.35);
+            ctx.stroke();
+          }
+        }
+        // Symbol hint via subtle inner ring
+        ctx.strokeStyle = withAlphaColor('#ffffff', 0.7);
+        ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.arc(cx, cy + bob, Math.max(o.width, o.height) / 2 - 4, 0, Math.PI * 2);
+        ctx.arc(cx, drawY, r - 4, 0, Math.PI * 2);
         ctx.stroke();
       } else {
+        // Platform / bouncy / unstable — flat rect with gradient depth + edge highlight.
+        const isBouncy = o.kind === 'bouncy';
+        const isUnstable = o.kind === 'unstable';
+        const baseColor = o.color;
+        // Body gradient — top half-bright to bottom-shadow gives 3D feel.
+        const grad = ctx.createLinearGradient(o.x, o.y, o.x, o.y + o.height);
+        grad.addColorStop(0, isBouncy ? lighten(baseColor, 0.3) : withAlphaColor(baseColor, 0.95));
+        grad.addColorStop(0.5, baseColor);
+        grad.addColorStop(1, mixColor(baseColor, '#000000', 0.5));
+        ctx.fillStyle = grad;
+        if (!this.lowQuality) {
+          ctx.shadowColor = baseColor;
+          ctx.shadowBlur = (isBouncy ? 14 : isUnstable ? 12 : 8) * pulse;
+        }
         ctx.fillRect(o.x, o.y, o.width, o.height);
+        ctx.shadowBlur = 0;
+        // Glowing top edge
+        if (!this.lowQuality) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'lighter';
+          ctx.fillStyle = withAlphaColor('#ffffff', 0.5 * pulse);
+          ctx.fillRect(o.x, o.y, o.width, 1.5);
+          // Bouncy panels also get scanline highlights.
+          if (isBouncy) {
+            ctx.fillStyle = withAlphaColor('#ffffff', 0.25);
+            for (let sx = o.x + 4; sx < o.x + o.width - 4; sx += 6) {
+              ctx.fillRect(sx, o.y + 2, 2, o.height - 4);
+            }
+          }
+          // Unstable: flashing warning hash lines
+          if (isUnstable) {
+            const flash = 0.4 + Math.abs(Math.sin(time * 0.18)) * 0.6;
+            ctx.fillStyle = withAlphaColor('#ffffff', flash * 0.5);
+            ctx.fillRect(o.x, o.y + o.height - 2, o.width, 2);
+          }
+          ctx.restore();
+        }
       }
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
@@ -790,12 +1175,15 @@ export class Game {
     const ctx = this.renderer.ctx;
     const speed = player.vel.len();
     const fast = Math.min(1, speed / 22);
+    const time = this.framesSinceStart;
 
     // Outer bloom — drawn under the body, additive, scales with speed.
     if (!this.lowQuality) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      const bloomR = player.radius * (isBot ? 2.0 : 2.8) + fast * 6;
+      // Pulsing outer aura
+      const breathe = 0.85 + Math.sin(time * 0.12) * 0.15;
+      const bloomR = (player.radius * (isBot ? 2.2 : 3.4) + fast * 10) * breathe;
       const bloom = ctx.createRadialGradient(
         player.pos.x,
         player.pos.y,
@@ -804,7 +1192,7 @@ export class Game {
         player.pos.y,
         bloomR,
       );
-      const a = isBot ? 0.18 : 0.32 + fast * 0.18;
+      const a = isBot ? 0.2 : 0.36 + fast * 0.22;
       bloom.addColorStop(0, withAlphaColor(glow, a));
       bloom.addColorStop(0.5, withAlphaColor(glow, a * 0.4));
       bloom.addColorStop(1, withAlphaColor(glow, 0));
@@ -812,6 +1200,46 @@ export class Game {
       ctx.beginPath();
       ctx.arc(player.pos.x, player.pos.y, bloomR, 0, Math.PI * 2);
       ctx.fill();
+      // Secondary tight glow (whiter core)
+      if (!isBot) {
+        const tight = ctx.createRadialGradient(
+          player.pos.x,
+          player.pos.y,
+          0,
+          player.pos.x,
+          player.pos.y,
+          player.radius * 1.6,
+        );
+        tight.addColorStop(0, withAlphaColor('#ffffff', 0.35));
+        tight.addColorStop(1, withAlphaColor('#ffffff', 0));
+        ctx.fillStyle = tight;
+        ctx.beginPath();
+        ctx.arc(player.pos.x, player.pos.y, player.radius * 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Dash afterimage echoes (only for player)
+    if (!this.lowQuality && !isBot && player.dashFlashTimer > 0) {
+      const t = player.dashFlashTimer / 8; // 0..1
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 1; i <= 3; i++) {
+        const back = i * 6;
+        const ax = player.pos.x - player.vel.x * 0.06 * i;
+        const ay = player.pos.y - player.vel.y * 0.06 * i;
+        const aa = (t * 0.45) / i;
+        const echoGrad = ctx.createRadialGradient(ax, ay, 0, ax, ay, player.radius * 1.6);
+        echoGrad.addColorStop(0, withAlphaColor('#ffffff', aa));
+        echoGrad.addColorStop(0.4, withAlphaColor(glow, aa * 0.7));
+        echoGrad.addColorStop(1, withAlphaColor(glow, 0));
+        ctx.fillStyle = echoGrad;
+        ctx.beginPath();
+        ctx.arc(ax, ay, player.radius * (1.4 + i * 0.15), 0, Math.PI * 2);
+        ctx.fill();
+        void back;
+      }
       ctx.restore();
     }
 
@@ -824,33 +1252,52 @@ export class Game {
     if (!this.lowQuality && fast > 0.4 && !isBot) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      const streakLen = player.radius * (1.6 + fast * 3);
+      const streakLen = player.radius * (1.8 + fast * 3.6);
       const streak = ctx.createLinearGradient(0, player.radius, 0, player.radius + streakLen);
-      streak.addColorStop(0, withAlphaColor(glow, 0.55 * fast));
+      streak.addColorStop(0, withAlphaColor(glow, 0.65 * fast));
+      streak.addColorStop(0.5, withAlphaColor('#ffffff', 0.35 * fast));
       streak.addColorStop(1, withAlphaColor(glow, 0));
       ctx.fillStyle = streak;
       ctx.beginPath();
-      ctx.moveTo(-player.radius * 0.6, player.radius * 0.7);
-      ctx.lineTo(player.radius * 0.6, player.radius * 0.7);
+      ctx.moveTo(-player.radius * 0.7, player.radius * 0.7);
+      ctx.lineTo(player.radius * 0.7, player.radius * 0.7);
       ctx.lineTo(0, player.radius + streakLen);
       ctx.closePath();
       ctx.fill();
       ctx.restore();
     }
 
+    // Engine glow at the tail — pulsing white-hot core
+    if (!this.lowQuality && !isBot) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const flicker = 0.85 + Math.sin(time * 0.6) * 0.15;
+      const engR = player.radius * (0.55 + fast * 0.4) * flicker;
+      const eng = ctx.createRadialGradient(0, player.radius * 0.7, 0, 0, player.radius * 0.7, engR);
+      eng.addColorStop(0, '#ffffff');
+      eng.addColorStop(0.4, withAlphaColor(glow, 0.85));
+      eng.addColorStop(1, withAlphaColor(glow, 0));
+      ctx.fillStyle = eng;
+      ctx.beginPath();
+      ctx.arc(0, player.radius * 0.7, engR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     if (!this.lowQuality) {
       ctx.shadowColor = glow;
-      ctx.shadowBlur = isBot ? 6 : 14;
+      ctx.shadowBlur = isBot ? 6 : 16;
     }
     if (player.dashFlashTimer > 0) {
-      ctx.shadowBlur = 30;
+      ctx.shadowBlur = 36;
       ctx.shadowColor = '#ffffff';
     }
     // Ship body — gradient fill for depth.
     const bodyGrad = ctx.createLinearGradient(0, -player.radius * 1.4, 0, player.radius);
     bodyGrad.addColorStop(0, '#ffffff');
-    bodyGrad.addColorStop(0.35, primary);
-    bodyGrad.addColorStop(1, mixColor(primary, '#000000', 0.45));
+    bodyGrad.addColorStop(0.3, lighten(primary, 0.2));
+    bodyGrad.addColorStop(0.55, primary);
+    bodyGrad.addColorStop(1, mixColor(primary, '#000000', 0.5));
     ctx.fillStyle = bodyGrad;
     ctx.beginPath();
     ctx.moveTo(0, -player.radius * 1.4);
@@ -859,15 +1306,34 @@ export class Game {
     ctx.lineTo(-player.radius, player.radius);
     ctx.closePath();
     ctx.fill();
-    // Cockpit glint
-    ctx.fillStyle = '#ffffff';
+    // Bright inner pip lines — subtle structural detail
     ctx.shadowBlur = 0;
+    if (!isBot) {
+      ctx.strokeStyle = withAlphaColor('#ffffff', 0.45);
+      ctx.lineWidth = 0.6;
+      ctx.beginPath();
+      ctx.moveTo(0, -player.radius * 1.2);
+      ctx.lineTo(0, player.radius * 0.3);
+      ctx.stroke();
+    }
+    // Cockpit glint — small bright orb with bloom
+    ctx.fillStyle = '#ffffff';
+    if (!this.lowQuality) {
+      ctx.shadowColor = glow;
+      ctx.shadowBlur = 8;
+    }
     ctx.beginPath();
-    ctx.arc(0, -player.radius * 0.3, player.radius * 0.32, 0, Math.PI * 2);
+    ctx.arc(0, -player.radius * 0.3, player.radius * 0.34, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // Tiny inner glint dot (highlight)
+    ctx.fillStyle = withAlphaColor('#ffffff', 0.95);
+    ctx.beginPath();
+    ctx.arc(-player.radius * 0.1, -player.radius * 0.4, player.radius * 0.12, 0, Math.PI * 2);
     ctx.fill();
     // Edge highlight
-    ctx.strokeStyle = withAlphaColor(glow, 0.9);
-    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = withAlphaColor(glow, 0.95);
+    ctx.lineWidth = 1.4;
     ctx.beginPath();
     ctx.moveTo(0, -player.radius * 1.4);
     ctx.lineTo(player.radius, player.radius);
@@ -883,15 +1349,22 @@ export class Game {
     const ctx = this.renderer.ctx;
     const playerY = this.player.pos.y;
     let drawn = 0;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
     for (let i = frames.length - 1; i >= 0; i--) {
       const f = frames[i]!;
       if (Math.abs(f.py - playerY) > this.renderer.cssHeight) continue;
-      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      const grad = ctx.createRadialGradient(f.px, f.py, 0, f.px, f.py, 14);
+      grad.addColorStop(0, 'rgba(255,255,255,0.35)');
+      grad.addColorStop(0.5, 'rgba(255,255,255,0.12)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(f.px, f.py, 8, 0, Math.PI * 2);
+      ctx.arc(f.px, f.py, 14, 0, Math.PI * 2);
       ctx.fill();
-      if (++drawn > 12) break;
+      if (++drawn > 16) break;
     }
+    ctx.restore();
   }
 
   private drawLava(colors: [string, string]): void {
@@ -900,62 +1373,143 @@ export class Game {
     const w = WORLD_WIDTH;
     const x = -w / 2;
     const y = this.killY;
+    const t = this.framesSinceStart;
     // Body of lava — vertical gradient with heat haze above.
-    const grad = ctx.createLinearGradient(0, y - 90, 0, y + 280);
+    const grad = ctx.createLinearGradient(0, y - 120, 0, y + 320);
     grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(0.18, withAlphaColor(colors[0], 0.4));
-    grad.addColorStop(0.42, colors[0]);
+    grad.addColorStop(0.12, withAlphaColor(colors[0], 0.32));
+    grad.addColorStop(0.32, withAlphaColor(colors[0], 0.78));
+    grad.addColorStop(0.5, colors[0]);
     grad.addColorStop(1, colors[1]);
     ctx.fillStyle = grad;
-    ctx.fillRect(x - 800, y - 60, w + 1600, 860);
+    ctx.fillRect(x - 800, y - 80, w + 1600, 880);
 
-    // Subtle inner glow band right under the surface.
+    // Heat haze rising above — wavy gradient bands using additive blend.
     if (!this.lowQuality) {
       ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      const glow = ctx.createLinearGradient(0, y - 30, 0, y + 80);
-      glow.addColorStop(0, 'rgba(0,0,0,0)');
-      glow.addColorStop(0.5, withAlphaColor('#ffd200', 0.3));
-      glow.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = glow;
-      ctx.fillRect(x - 800, y - 30, w + 1600, 110);
+      ctx.globalCompositeOperation = 'screen';
+      const hazeBands = 4;
+      for (let i = 0; i < hazeBands; i++) {
+        const phase = t * 0.012 + i * 1.7;
+        const hy = y - 40 - i * 30 + Math.sin(phase) * 4;
+        const haze = ctx.createLinearGradient(0, hy - 30, 0, hy + 30);
+        haze.addColorStop(0, 'rgba(0,0,0,0)');
+        haze.addColorStop(0.5, withAlphaColor(colors[0], 0.14 - i * 0.025));
+        haze.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = haze;
+        ctx.fillRect(x - 800, hy - 30, w + 1600, 60);
+      }
       ctx.restore();
     }
 
-    // Wave crest — two layered sines for a richer surface.
+    // Inner bright glow band right under the surface.
+    if (!this.lowQuality) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const glow = ctx.createLinearGradient(0, y - 35, 0, y + 90);
+      glow.addColorStop(0, 'rgba(0,0,0,0)');
+      glow.addColorStop(0.5, withAlphaColor('#ffd200', 0.4));
+      glow.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(x - 800, y - 35, w + 1600, 125);
+      ctx.restore();
+    }
+
+    // Internal magma blobs — pulsing radial gradients beneath the surface for
+    // depth. Hand-placed across width but jiggled by sin waves.
+    if (!this.lowQuality) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 5; i++) {
+        const bx = x + (i + 0.5) * (w / 5) + Math.sin(t * 0.02 + i) * 30;
+        const by = y + 50 + Math.cos(t * 0.025 + i * 1.3) * 18;
+        const br = 60 + Math.sin(t * 0.03 + i) * 14;
+        const blob = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+        blob.addColorStop(0, withAlphaColor('#ffe680', 0.55));
+        blob.addColorStop(0.5, withAlphaColor(colors[0], 0.25));
+        blob.addColorStop(1, withAlphaColor(colors[0], 0));
+        ctx.fillStyle = blob;
+        ctx.beginPath();
+        ctx.arc(bx, by, br, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    // Wave crest — three layered sines + bright glow for a turbulent surface.
     ctx.save();
     if (!this.lowQuality) {
       ctx.shadowColor = colors[0];
-      ctx.shadowBlur = 16;
+      ctx.shadowBlur = 20;
     }
+    // Outermost bright thin line
     ctx.strokeStyle = '#fff7c2';
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
-    for (let i = -12; i <= 12; i++) {
-      const xi = i * (w / 12);
-      const wave = Math.sin(this.framesSinceStart * 0.04 + i) * 4 + Math.sin(this.framesSinceStart * 0.09 + i * 0.7) * 2.5;
-      if (i === -12) ctx.moveTo(xi, y + wave);
+    for (let i = -16; i <= 16; i++) {
+      const xi = i * (w / 16);
+      const wave =
+        Math.sin(t * 0.04 + i) * 5 +
+        Math.sin(t * 0.09 + i * 0.7) * 3 +
+        Math.sin(t * 0.18 + i * 1.3) * 1.5;
+      if (i === -16) ctx.moveTo(xi, y + wave);
       else ctx.lineTo(xi, y + wave);
     }
     ctx.stroke();
+    // Middle wave line — colored
     ctx.strokeStyle = colors[0];
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
-    for (let i = -10; i <= 10; i++) {
-      const xi = i * (w / 10);
-      const wave = Math.sin(this.framesSinceStart * 0.04 + i) * 6;
-      if (i === -10) ctx.moveTo(xi, y + wave + 3);
+    for (let i = -14; i <= 14; i++) {
+      const xi = i * (w / 14);
+      const wave = Math.sin(t * 0.04 + i) * 6 + Math.sin(t * 0.07 + i * 0.5) * 2.5;
+      if (i === -14) ctx.moveTo(xi, y + wave + 3);
       else ctx.lineTo(xi, y + wave + 3);
+    }
+    ctx.stroke();
+    // Inner dim secondary crest
+    ctx.strokeStyle = withAlphaColor('#ffd200', 0.55);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    for (let i = -12; i <= 12; i++) {
+      const xi = i * (w / 12);
+      const wave = Math.sin(t * 0.05 + i * 1.3) * 3 + Math.sin(t * 0.13 + i * 0.4) * 1.5;
+      if (i === -12) ctx.moveTo(xi, y + wave + 7);
+      else ctx.lineTo(xi, y + wave + 7);
     }
     ctx.stroke();
     ctx.restore();
 
-    // Emit embers occasionally — only when lava is near the player to save CPU.
+    // Emit embers — denser when lava is near the player.
     if (!this.lowQuality && !this.save.data.settings.reducedMotion) {
       const distToPlayer = y - this.player.pos.y;
-      if (distToPlayer < 800 && Math.random() < 0.55) {
-        const ex = this.player.pos.x + (Math.random() - 0.5) * this.renderer.cssWidth * 0.9;
-        this.particles.ember(ex, y - 4, Math.random() < 0.5 ? colors[0] : '#ffd200');
+      if (distToPlayer < 800) {
+        const density = Math.max(0.4, 1 - distToPlayer / 800);
+        // Embers
+        if (Math.random() < 0.75 * density) {
+          const ex = this.player.pos.x + (Math.random() - 0.5) * this.renderer.cssWidth * 0.9;
+          this.particles.ember(ex, y - 4, Math.random() < 0.5 ? colors[0] : '#ffd200');
+        }
+        // Occasional hot spark eruption right at the surface
+        if (Math.random() < 0.18 * density) {
+          const ex = this.player.pos.x + (Math.random() - 0.5) * this.renderer.cssWidth * 0.9;
+          const sp = 2 + Math.random() * 4;
+          const ang = -Math.PI / 2 + (Math.random() - 0.5) * 0.7;
+          this.particles.hotSpark(
+            ex,
+            y - 6,
+            Math.cos(ang) * sp,
+            Math.sin(ang) * sp,
+            '#ffd200',
+            0.6,
+          );
+        }
+        // Rare lava splash burst when very close
+        if (distToPlayer < 380 && Math.random() < 0.05) {
+          const ex = this.player.pos.x + (Math.random() - 0.5) * this.renderer.cssWidth * 0.6;
+          this.particles.shockwave(ex, y - 4, '#ffd200', { size: 18, life: 0.45 });
+          this.particles.burst(ex, y - 8, 5, colors[0], { speed: 0.4, life: 0.6 });
+        }
       }
     }
   }
@@ -1139,12 +1693,25 @@ export class Game {
         this.combo.onHookConnect(e.perfectAnchor);
         this.sfx.hookConnect(e.distance);
         this.camera.shake(5);
-        this.particles.burst(e.position.x, e.position.y, 18, e.obstacle.color, { speed: 0.8 });
+        // Shockwave ring at anchor + radial burst of color particles.
+        this.particles.shockwave(e.position.x, e.position.y, e.obstacle.color, { size: 18, life: 0.5 });
+        this.particles.burst(e.position.x, e.position.y, 14, e.obstacle.color, { speed: 0.8 });
+        // A few hot sparks flying out in random directions
+        for (let k = 0; k < 6; k++) {
+          const a = Math.random() * Math.PI * 2;
+          const sp = 2 + Math.random() * 3;
+          this.particles.hotSpark(e.position.x, e.position.y, Math.cos(a) * sp, Math.sin(a) * sp, e.obstacle.color, 0.5);
+        }
+        this.screen.pulseBloom(0.25);
         this.haptics.trigger('hookConnect');
         this.tutorial?.notify('hookConnect');
         if (e.perfectAnchor) {
           this.scoring.addBonus(50);
-          this.screen.addFloatingText('PERFECT ANCHOR', e.position.x, e.position.y - 12, '#00ff8a', { size: 14 });
+          // Bigger callout + sparkle ring for perfect anchors
+          this.particles.shockwave(e.position.x, e.position.y, '#00ff8a', { size: 28, life: 0.7, thickness: 4 });
+          this.particles.sparkle(e.position.x, e.position.y, '#00ff8a', { size: 10, life: 1.2 });
+          this.screen.addFloatingText('PERFECT ANCHOR', e.position.x, e.position.y - 18, '#00ff8a', { size: 16, bold: true });
+          this.camera.flash(0.12);
         }
       },
       onHookRelease: (vel) => {
@@ -1152,46 +1719,146 @@ export class Game {
         this.sfx.hookRelease();
         this.sfx.swingWhoosh(vel.len());
         this.tutorial?.notify('hookRelease');
+        // Brief burst at the player on release if moving fast
+        if (vel.len() > 16 && this.player) {
+          this.particles.burst(this.player.pos.x, this.player.pos.y, 6, '#ffffff', { speed: 0.4, life: 0.4 });
+        }
         if (this.combo.combo > 1 && this.combo.combo % 3 === 0) {
           this.sfx.combo(this.combo.combo);
-          this.camera.flash(0.2);
+          this.camera.flash(0.22);
+          this.camera.shake(3);
+          this.screen.pulseBloom(0.35);
           this.haptics.trigger('comboMilestone');
-          this.screen.addFloatingText(`COMBO ×${this.combo.combo}`, this.player!.pos.x, this.player!.pos.y - 30, '#ff9d2e', { size: 18 });
+          if (this.player) {
+            this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#ff9d2e', {
+              size: 26,
+              life: 0.6,
+              thickness: 4,
+            });
+            this.particles.burst(this.player.pos.x, this.player.pos.y, 12, '#ff9d2e', { speed: 1, life: 0.9 });
+            this.screen.addFloatingText(
+              `COMBO ×${this.combo.combo}`,
+              this.player.pos.x,
+              this.player.pos.y - 36,
+              this.combo.combo >= 6 ? '#ff2bff' : '#ff9d2e',
+              { size: 22, bold: true },
+            );
+          }
         }
       },
       onDash: () => {
         this.sfx.dash();
         this.camera.shake(8);
-        this.camera.chroma(0.4);
-        this.particles.burst(this.player!.pos.x, this.player!.pos.y, 14, '#ff2bff', { speed: 0.5 });
+        this.camera.chroma(0.45);
+        this.screen.pulseBloom(0.45);
+        if (this.player) {
+          // Big shockwave ring + magenta burst + radial sparks shooting outward
+          this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#ff2bff', {
+            size: 22,
+            life: 0.55,
+            thickness: 4,
+          });
+          this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#ffffff', {
+            size: 14,
+            life: 0.4,
+          });
+          this.particles.burst(this.player.pos.x, this.player.pos.y, 14, '#ff2bff', { speed: 0.7, life: 0.8 });
+          for (let k = 0; k < 8; k++) {
+            const a = Math.random() * Math.PI * 2;
+            const sp = 3 + Math.random() * 3;
+            this.particles.hotSpark(
+              this.player.pos.x,
+              this.player.pos.y,
+              Math.cos(a) * sp,
+              Math.sin(a) * sp,
+              '#ff2bff',
+              0.55,
+            );
+          }
+        }
         this.haptics.trigger('dash');
         this.tutorial?.notify('dash');
       },
       onDeath: (cause) => {
         this.lastCause = cause;
         this.sfx.death();
-        this.camera.shake(20);
-        this.camera.flash(0.6);
-        this.camera.slowMo(0.4, 5);
-        this.particles.burst(this.player!.pos.x, this.player!.pos.y, 40, '#ff255e', { speed: 1.6, life: 1.4 });
+        this.camera.shake(22);
+        this.camera.flash(0.7);
+        this.camera.chroma(0.6);
+        this.camera.slowMo(0.35, 7);
+        if (this.player) {
+          // Triple expanding shockwaves + dense burst
+          this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#ff255e', {
+            size: 30,
+            life: 0.9,
+            thickness: 5,
+          });
+          this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#ff9d2e', {
+            size: 22,
+            life: 0.7,
+            thickness: 3,
+          });
+          this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#ffffff', {
+            size: 14,
+            life: 0.55,
+            thickness: 2,
+          });
+          this.particles.burst(this.player.pos.x, this.player.pos.y, 40, '#ff255e', { speed: 1.6, life: 1.4 });
+          this.particles.burst(this.player.pos.x, this.player.pos.y, 16, '#ffd200', { speed: 1.1, life: 1.2 });
+          for (let k = 0; k < 14; k++) {
+            const a = Math.random() * Math.PI * 2;
+            const sp = 3 + Math.random() * 5;
+            this.particles.hotSpark(
+              this.player.pos.x,
+              this.player.pos.y,
+              Math.cos(a) * sp,
+              Math.sin(a) * sp,
+              k % 2 === 0 ? '#ff255e' : '#ffd200',
+              0.8,
+            );
+          }
+        }
         this.haptics.trigger('death');
       },
       onNearMiss: (obs, _distance) => {
         this.combo.onNearMiss();
         this.scoring.addBonus(15);
         this.sfx.nearMiss();
-        this.camera.flash(0.08);
+        this.camera.flash(0.1);
+        this.camera.chroma(0.18);
         this.haptics.trigger('nearMiss');
-        this.screen.addFloatingText('NEAR MISS', obs.x + obs.width / 2, obs.y - 8, '#00f3ff', { size: 13 });
+        // Subtle sparkle at the obstacle
+        if (this.player) {
+          this.particles.sparkle(obs.x + obs.width / 2, obs.y + obs.height / 2, '#00f3ff', { size: 6, life: 0.6 });
+        }
+        this.screen.addFloatingText('NEAR MISS', obs.x + obs.width / 2, obs.y - 8, '#00f3ff', { size: 14 });
       },
       onBounce: (obs) => {
         this.sfx.bounce();
         this.camera.shake(6);
-        this.particles.burst(obs.x + obs.width / 2, obs.y + obs.height / 2, 12, obs.color, { speed: 0.7 });
+        const cx = obs.x + obs.width / 2;
+        const cy = obs.y + obs.height / 2;
+        this.particles.shockwave(cx, cy, obs.color, { size: 14, life: 0.4, thickness: 3 });
+        this.particles.burst(cx, cy, 12, obs.color, { speed: 0.7 });
+        for (let k = 0; k < 5; k++) {
+          const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.6;
+          const sp = 2 + Math.random() * 2;
+          this.particles.hotSpark(cx, cy, Math.cos(a) * sp, Math.sin(a) * sp, obs.color, 0.4);
+        }
         this.haptics.trigger('bounce');
       },
       onShieldAbsorb: () => {
         this.achievements.unlock('shield-saved', this.notifyUnlock);
+        if (this.player) {
+          this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#00ff8a', {
+            size: 30,
+            life: 0.7,
+            thickness: 5,
+          });
+          this.particles.burst(this.player.pos.x, this.player.pos.y, 22, '#00ff8a', { speed: 1.2, life: 0.9 });
+          this.camera.flash(0.3);
+          this.screen.pulseBloom(0.5);
+        }
       },
       onPickup: (kind, obs) => {
         const cx = obs.x + obs.width / 2;
@@ -1200,31 +1867,41 @@ export class Game {
           case 'spark': {
             this.runSparks += 1;
             this.scoring.addBonus(20);
-            this.particles.burst(cx, cy, 8, '#ffd400', { speed: 0.6 });
+            this.particles.sparkle(cx, cy, '#ffd400', { size: 7, life: 0.8 });
+            this.particles.burst(cx, cy, 6, '#ffd400', { speed: 0.5, life: 0.5 });
             this.sfx.blip('spark', { freq: 880, duration: 0.05, type: 'triangle', gain: 0.03, slide: 360 });
             this.screen.addFloatingText('+1', cx, cy - 6, '#ffd400', { size: 12, life: 0.6 });
             break;
           }
           case 'shield-pickup':
+            this.particles.shockwave(cx, cy, '#00ff8a', { size: 18, life: 0.6, thickness: 3 });
             this.particles.burst(cx, cy, 18, '#00ff8a', { speed: 0.8 });
+            this.particles.sparkle(cx, cy, '#00ff8a', { size: 12, life: 1.2 });
             this.sfx.unlock();
             this.haptics.trigger('unlock');
-            this.screen.addFloatingText('SHIELD', cx, cy - 12, '#00ff8a', { size: 14 });
+            this.screen.pulseBloom(0.3);
+            this.screen.addFloatingText('SHIELD', cx, cy - 12, '#00ff8a', { size: 14, bold: true });
             this.toast.show('Shield ready — blocks the next hit.');
             break;
           case 'magnet-pickup':
+            this.particles.shockwave(cx, cy, '#a45cff', { size: 18, life: 0.6, thickness: 3 });
             this.particles.burst(cx, cy, 18, '#a45cff', { speed: 0.8 });
+            this.particles.sparkle(cx, cy, '#a45cff', { size: 12, life: 1.2 });
             this.sfx.unlock();
             this.haptics.trigger('unlock');
-            this.screen.addFloatingText('MAGNET', cx, cy - 12, '#a45cff', { size: 14 });
+            this.screen.pulseBloom(0.3);
+            this.screen.addFloatingText('MAGNET', cx, cy - 12, '#a45cff', { size: 14, bold: true });
             this.toast.show('Magnet active — pulls in nearby sparks for 6 seconds.');
             break;
           case 'slow-pickup':
             this.slowLavaFrames = Math.max(this.slowLavaFrames, 600);
+            this.particles.shockwave(cx, cy, '#a4f0ff', { size: 22, life: 0.7, thickness: 3 });
             this.particles.burst(cx, cy, 18, '#a4f0ff', { speed: 0.8 });
+            this.particles.sparkle(cx, cy, '#a4f0ff', { size: 12, life: 1.2 });
             this.sfx.unlock();
             this.haptics.trigger('unlock');
-            this.screen.addFloatingText('SLOW LAVA', cx, cy - 12, '#a4f0ff', { size: 14 });
+            this.screen.pulseBloom(0.3);
+            this.screen.addFloatingText('SLOW LAVA', cx, cy - 12, '#a4f0ff', { size: 14, bold: true });
             this.toast.show('Slow lava active — rising hazard at quarter speed.');
             break;
         }

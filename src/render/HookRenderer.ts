@@ -54,7 +54,7 @@ export class HookRenderer {
       case 'plasma':
       case 'thread':
       case 'silk':
-        this.drawCable(ctx, start, end, def, tension, lowQuality);
+        this.drawCable(ctx, start, end, def, tension, time, lowQuality);
         break;
       case 'laser':
         this.drawLaser(ctx, start, end, def, time, tension, lowQuality);
@@ -67,18 +67,30 @@ export class HookRenderer {
         break;
     }
 
+    // Energy pulse — bright dot that travels along the rope from player to anchor.
+    if (hook.state === 'attached' && !lowQuality) {
+      this.drawEnergyPulse(ctx, start, end, def, time);
+    }
+
     // Anchor visuals
     if (hook.state === 'attached') {
       const sinceAttach = time - this.lastAttachTime;
-      const flashT = Math.max(0, 1 - sinceAttach / 14);
-      // Impact ring just after attach
+      const flashT = Math.max(0, 1 - sinceAttach / 18);
+      // Impact ring + sub-rings just after attach
       if (flashT > 0 && !lowQuality) {
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
+        // Primary ring
         ctx.strokeStyle = withAlpha(def.color, flashT);
-        ctx.lineWidth = 2 + (1 - flashT) * 2;
+        ctx.lineWidth = 2.4 + (1 - flashT) * 2;
         ctx.beginPath();
-        ctx.arc(end.x, end.y, 6 + (1 - flashT) * 20, 0, Math.PI * 2);
+        ctx.arc(end.x, end.y, 6 + (1 - flashT) * 26, 0, Math.PI * 2);
+        ctx.stroke();
+        // Echo ring (faster expansion, thinner)
+        ctx.strokeStyle = withAlpha('#ffffff', flashT * 0.7);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(end.x, end.y, 10 + (1 - flashT) * 36, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
       }
@@ -86,17 +98,31 @@ export class HookRenderer {
       const pulse = 0.6 + Math.sin(time * 0.2) * 0.4;
       if (!lowQuality) {
         ctx.shadowColor = def.color;
-        ctx.shadowBlur = 16 * pulse;
+        ctx.shadowBlur = 20 * pulse;
       }
       const r = 4 + pulse * 1.4;
-      const grad = ctx.createRadialGradient(end.x, end.y, 0, end.x, end.y, r * 3);
+      const grad = ctx.createRadialGradient(end.x, end.y, 0, end.x, end.y, r * 3.2);
       grad.addColorStop(0, withAlpha(def.color, 0.9));
-      grad.addColorStop(0.5, withAlpha(def.color, 0.35));
+      grad.addColorStop(0.5, withAlpha(def.color, 0.4));
       grad.addColorStop(1, withAlpha(def.color, 0));
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(end.x, end.y, r * 3, 0, Math.PI * 2);
+      ctx.arc(end.x, end.y, r * 3.2, 0, Math.PI * 2);
       ctx.fill();
+      // Bright cross glint
+      if (!lowQuality) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = withAlpha('#ffffff', 0.8 * pulse);
+        ctx.lineWidth = 0.9;
+        const crossLen = 8 + pulse * 4;
+        ctx.beginPath();
+        ctx.moveTo(end.x - crossLen, end.y);
+        ctx.lineTo(end.x + crossLen, end.y);
+        ctx.moveTo(end.x, end.y - crossLen);
+        ctx.lineTo(end.x, end.y + crossLen);
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+      }
       ctx.fillStyle = '#ffffff';
       ctx.shadowBlur = 0;
       ctx.beginPath();
@@ -104,17 +130,60 @@ export class HookRenderer {
       ctx.fill();
     } else if (hook.state === 'shooting') {
       // Bright trail head while shooting
-      const grad = ctx.createRadialGradient(end.x, end.y, 0, end.x, end.y, 8);
+      const grad = ctx.createRadialGradient(end.x, end.y, 0, end.x, end.y, 10);
       grad.addColorStop(0, '#ffffff');
       grad.addColorStop(0.5, withAlpha(def.color, 0.9));
       grad.addColorStop(1, withAlpha(def.color, 0));
       ctx.fillStyle = grad;
       ctx.beginPath();
-      ctx.arc(end.x, end.y, 8, 0, Math.PI * 2);
+      ctx.arc(end.x, end.y, 10, 0, Math.PI * 2);
       ctx.fill();
+      // Forward-facing cone glint while in-flight
+      if (!lowQuality) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = withAlpha('#ffffff', 0.6);
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.arc(end.x, end.y, 4, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalCompositeOperation = 'source-over';
+      }
     }
 
     ctx.restore();
+  }
+
+  /**
+   * Animated bright bead that slides along the rope from player to anchor —
+   * conveys "energy flowing in" while attached. Tiny perf cost: one gradient
+   * + one circle fill.
+   */
+  private drawEnergyPulse(
+    ctx: CanvasRenderingContext2D,
+    start: Vec2,
+    end: Vec2,
+    def: HookDef,
+    time: number,
+  ): void {
+    // Two pulses traveling at slightly different speeds for richness.
+    const speeds = [0.012, 0.018];
+    for (const speed of speeds) {
+      const t = ((time * speed) % 1 + 1) % 1;
+      const x = start.x + (end.x - start.x) * t;
+      const y = start.y + (end.y - start.y) * t;
+      const r = 5;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, r * 2);
+      grad.addColorStop(0, withAlpha('#ffffff', 0.9));
+      grad.addColorStop(0.5, withAlpha(def.color, 0.6));
+      grad.addColorStop(1, withAlpha(def.color, 0));
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   private drawCable(
@@ -123,14 +192,15 @@ export class HookRenderer {
     end: Vec2,
     def: HookDef,
     tension: number,
+    time: number,
     lowQuality: boolean,
   ): void {
     // Outer glow halo.
     if (!lowQuality) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.strokeStyle = withAlpha(def.color, 0.25 + tension * 0.25);
-      ctx.lineWidth = def.width + 4;
+      ctx.strokeStyle = withAlpha(def.color, 0.3 + tension * 0.3);
+      ctx.lineWidth = def.width + 5;
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
       ctx.lineTo(end.x, end.y);
@@ -153,6 +223,27 @@ export class HookRenderer {
     ctx.lineTo(end.x, end.y);
     ctx.stroke();
     ctx.shadowBlur = 0;
+
+    // Bright shimmer band traveling along the cable — subtle.
+    if (!lowQuality) {
+      const dx = end.x - start.x;
+      const dy = end.y - start.y;
+      const t = (time * 0.02) % 1;
+      const sx = start.x + dx * (t - 0.05);
+      const sy = start.y + dy * (t - 0.05);
+      const ex = start.x + dx * (t + 0.05);
+      const ey = start.y + dy * (t + 0.05);
+      const shimmer = ctx.createLinearGradient(sx, sy, ex, ey);
+      shimmer.addColorStop(0, 'rgba(255,255,255,0)');
+      shimmer.addColorStop(0.5, 'rgba(255,255,255,0.7)');
+      shimmer.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.strokeStyle = shimmer;
+      ctx.lineWidth = Math.max(0.5, def.width * 0.6);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+    }
   }
 
   private drawLaser(
@@ -168,16 +259,16 @@ export class HookRenderer {
     if (!lowQuality) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.strokeStyle = withAlpha(def.color, 0.35 * flicker + tension * 0.25);
-      ctx.lineWidth = def.width * 3.4;
+      ctx.strokeStyle = withAlpha(def.color, 0.4 * flicker + tension * 0.3);
+      ctx.lineWidth = def.width * 4;
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
       ctx.lineTo(end.x, end.y);
       ctx.stroke();
       ctx.restore();
     }
-    ctx.strokeStyle = withAlpha(def.color, 0.9);
-    ctx.lineWidth = def.width * 1.4;
+    ctx.strokeStyle = withAlpha(def.color, 0.95);
+    ctx.lineWidth = def.width * 1.6;
     ctx.beginPath();
     ctx.moveTo(start.x, start.y);
     ctx.lineTo(end.x, end.y);
@@ -200,7 +291,7 @@ export class HookRenderer {
     tension: number,
     lowQuality: boolean,
   ): void {
-    const segments = 14;
+    const segments = 16;
     const dx = end.x - start.x;
     const dy = end.y - start.y;
     const nx = -dy;
@@ -212,8 +303,8 @@ export class HookRenderer {
     if (!lowQuality) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.strokeStyle = withAlpha(def.color, 0.2);
-      ctx.lineWidth = def.width + 4;
+      ctx.strokeStyle = withAlpha(def.color, 0.25);
+      ctx.lineWidth = def.width + 5;
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
       for (let i = 1; i < segments; i++) {
@@ -229,7 +320,7 @@ export class HookRenderer {
     ctx.lineWidth = def.width;
     if (!lowQuality) {
       ctx.shadowColor = def.color;
-      ctx.shadowBlur = 8;
+      ctx.shadowBlur = 10;
     }
     ctx.beginPath();
     ctx.moveTo(start.x, start.y);
@@ -252,7 +343,7 @@ export class HookRenderer {
     tension: number,
     lowQuality: boolean,
   ): void {
-    const segments = 14;
+    const segments = 16;
     const dx = end.x - start.x;
     const dy = end.y - start.y;
     const nx = -dy;
@@ -260,12 +351,12 @@ export class HookRenderer {
     const len = Math.hypot(nx, ny);
     const ux = len > 0 ? nx / len : 0;
     const uy = len > 0 ? ny / len : 0;
-    const jitterAmp = 3 + tension * 4;
+    const jitterAmp = 3 + tension * 5;
     if (!lowQuality) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
-      ctx.strokeStyle = withAlpha(def.color, 0.3);
-      ctx.lineWidth = def.width + 4;
+      ctx.strokeStyle = withAlpha(def.color, 0.35);
+      ctx.lineWidth = def.width + 6;
       ctx.beginPath();
       ctx.moveTo(start.x, start.y);
       for (let i = 1; i < segments; i++) {
@@ -281,7 +372,7 @@ export class HookRenderer {
     ctx.lineWidth = def.width;
     if (!lowQuality) {
       ctx.shadowColor = def.color;
-      ctx.shadowBlur = 14;
+      ctx.shadowBlur = 16;
     }
     ctx.beginPath();
     ctx.moveTo(start.x, start.y);
@@ -295,4 +386,3 @@ export class HookRenderer {
     ctx.shadowBlur = 0;
   }
 }
-
