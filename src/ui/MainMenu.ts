@@ -9,6 +9,7 @@ export interface MainMenuCallbacks {
   onSettings(): void;
   onLeaderboard(mode: GameMode): void;
   onTutorial(): void;
+  onSetName?: () => void;
 }
 
 export class MainMenu {
@@ -32,6 +33,10 @@ export class MainMenu {
     const modal = document.createElement('div');
     modal.className = 'modal';
     const playLabel = save.data.settings.tutorialSeen ? 'Start Endless Climb' : 'Start Tutorial Run';
+    const playerName = save.data.playerName?.trim() || 'Pilot';
+    const nameBadge = save.data.playerNameSet
+      ? `<button class="name-badge" data-el="name" title="Change name">👤 ${this.escapeHtml(playerName)}</button>`
+      : `<button class="name-badge needs-name" data-el="name" title="Pick a name">👤 Set your name →</button>`;
     modal.innerHTML = `
       <div class="modal-content">
         <div class="hero">
@@ -42,6 +47,7 @@ export class MainMenu {
             <div class="hero-cta">
               <button class="primary large" data-el="play">${playLabel}</button>
               <button class="ghost" data-el="unlocks">Unlocks</button>
+              ${nameBadge}
             </div>
           </div>
           <div class="hero-stats">
@@ -123,6 +129,7 @@ export class MainMenu {
       .addEventListener('click', () => cb.onLeaderboard(GameMode.DailyChallenge));
     modal.querySelector('[data-el="settings"]')!.addEventListener('click', cb.onSettings);
     modal.querySelector('[data-el="tutorial"]')?.addEventListener('click', cb.onTutorial);
+    modal.querySelector('[data-el="name"]')?.addEventListener('click', () => cb.onSetName?.());
 
     const countdown = modal.querySelector<HTMLElement>('[data-el="countdown"]')!;
     const updateCountdown = (): void => {
@@ -150,6 +157,12 @@ export class MainMenu {
         return `Wins ${total}`;
       }
     }
+  }
+
+  private escapeHtml(s: string): string {
+    return s.replace(/[&<>"']/g, (c) =>
+      c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
+    );
   }
 
   close(): void {

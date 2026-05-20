@@ -21,7 +21,7 @@ import { ProgressionSystem } from '../systems/ProgressionSystem';
 import { AchievementSystem } from '../systems/AchievementSystem';
 import { UnlockSystem } from '../systems/UnlockSystem';
 import { DailyChallengeSystem } from '../systems/DailyChallengeSystem';
-import { LeaderboardSystem } from '../systems/LeaderboardSystem';
+import { LeaderboardSystem, LocalLeaderboardBackend } from '../systems/LeaderboardSystem';
 import { HapticsSystem } from '../systems/HapticsSystem';
 
 import { AudioEngine } from '../audio/AudioEngine';
@@ -39,6 +39,7 @@ import { SettingsScreen } from '../ui/SettingsScreen';
 import { DailyChallengeScreen } from '../ui/DailyChallengeScreen';
 import { Tutorial } from '../ui/Tutorial';
 import { ToastManager } from '../ui/Toast';
+import { NamePromptScreen } from '../ui/NamePromptScreen';
 
 import { getSkin } from '../content/skins';
 import { getHook } from '../content/hooks';
@@ -98,7 +99,7 @@ export class Game {
   achievements: AchievementSystem;
   unlocks: UnlockSystem;
   daily: DailyChallengeSystem;
-  leaderboardSys = new LeaderboardSystem();
+  leaderboardSys: LeaderboardSystem;
   crazy = new CrazyGamesPlatform();
 
   toast: ToastManager;
@@ -109,6 +110,7 @@ export class Game {
   unlocksScreen: UnlocksScreen;
   settingsScreen: SettingsScreen;
   dailyScreen: DailyChallengeScreen;
+  namePrompt: NamePromptScreen;
   tutorial: Tutorial | null = null;
 
   state: GameState = GameState.Boot;
@@ -187,6 +189,7 @@ export class Game {
     this.achievements = new AchievementSystem(this.save);
     this.unlocks = new UnlockSystem(this.save);
     this.daily = new DailyChallengeSystem(this.save);
+    this.leaderboardSys = new LeaderboardSystem(new LocalLeaderboardBackend(this.save));
     this.toast = new ToastManager(this.toastRoot);
     this.mainMenu = new MainMenu(this.overlayRoot);
     this.pauseMenu = new PauseMenu(this.overlayRoot);
@@ -194,6 +197,7 @@ export class Game {
     this.unlocksScreen = new UnlocksScreen(this.overlayRoot);
     this.settingsScreen = new SettingsScreen(this.overlayRoot);
     this.dailyScreen = new DailyChallengeScreen(this.overlayRoot);
+    this.namePrompt = new NamePromptScreen(this.overlayRoot);
 
     this.themes.setTheme(this.save.data.equippedTheme);
     this.background.init(this.renderer.cssWidth, this.renderer.cssHeight);
@@ -202,9 +206,12 @@ export class Game {
 
     this.input.onAudioUnlock(() => {
       this.audio.unlock();
-      if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
+      // Apply saved volumes before enable so the bus levels are correct on first sound.
+      this.audio.setVolume('music', this.save.data.settings.musicVolume);
+      this.audio.setVolume('sfx', this.save.data.settings.sfxVolume);
       this.audio.setEnabled('sfx', this.save.data.settings.sound);
       this.audio.setEnabled('music', this.save.data.settings.music);
+      if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
     });
 
     // Auto-pause when the tab loses focus — avoids "I tabbed away and died".
@@ -238,15 +245,43 @@ export class Game {
       await this.crazy.init();
       if (!this.crazy.available) return;
       const adapter = this.crazy.cloudAdapter();
-      if (!adapter) return;
-      this.save.attachCloud(
-        {
-          getItem: (k) => adapter.cloudGet(k),
-          setItem: (k, v) => adapter.cloudSet(k, v),
-        },
-        () => this.toast.show('Cloud save synced.'),
-      );
+      if (adapter) {
+        this.save.attachCloud(
+          {
+            getItem: (k) => adapter.cloudGet(k),
+            setItem: (k, v) => adapter.cloudSet(k, v),
+          },
+          () => this.toast.show('Cloud save synced.'),
+        );
+      }
+      // Pull the player's CrazyGames username if available — skips the local prompt.
+      if (!this.save.data.playerNameSet) {
+        const username = await this.crazy.getUsername();
+        if (username) {
+          this.save.data.playerName = username.slice(0, 16);
+          this.save.data.playerNameSet = true;
+          this.save.save();
+          this.toast.show(`Signed in as ${this.save.data.playerName}.`);
+          // If the main menu is open, refresh it so the new name shows.
+          if (this.state === GameState.MainMenu) this.openMainMenu();
+        }
+      }
     })();
+  }
+
+  /** Resolve the leaderboard display name for the current player. */
+  playerNameForBoard(): string {
+    const stored = this.save.data.playerName?.trim();
+    if (stored) return stored.slice(0, 16);
+    return 'YOU';
+  }
+
+  /** Update the player's display name and persist it. */
+  setPlayerName(raw: string): void {
+    const cleaned = raw.replace(/[^\p{L}\p{N}_\-. ]/gu, '').trim().slice(0, 16);
+    this.save.data.playerName = cleaned;
+    this.save.data.playerNameSet = cleaned.length > 0;
+    this.save.save();
   }
 
   private startLoop(): void {
@@ -464,6 +499,9 @@ export class Game {
       if (this.nextMilestone < 500) this.nextMilestone += 250;
       else this.nextMilestone += 500;
     }
+
+    // Tutorial altitude notify (final step gates on this).
+    this.tutorial?.notify('altitude', { altitude: this.player.maxAltitude });
 
     // Music intensity follows combo.
     if (this.save.data.settings.music) {
@@ -961,25 +999,44 @@ export class Game {
     this.state = GameState.MainMenu;
     this.mainMenu.open(this.save, this.daily, {
       onPlay: (mode) => this.startMode(mode),
-      onUnlocks: () => this.unlocksScreen.open(this.save, this.unlocks, this.toast, {
+      onUnlocks: () => this.unlocksScreen.open(this.save, this.unlocks, this.achievements, this.toast, {
         onClose: () => this.openMainMenu(),
       }),
       onSettings: () => this.settingsScreen.open(this.save, this.audio, this.music, this.toast, {
         onClose: () => this.openMainMenu(),
         onTutorialReset: () => this.openMainMenu(),
+        onNameChange: () => this.openMainMenu(),
       }),
       onLeaderboard: (mode) => {
         const score = this.save.data.bestScore[mode] ?? 0;
-        const board = this.leaderboardSys.generateDaily(this.daily.today().seed, score);
-        this.dailyScreen.open(this.save, this.daily, board, {
-          onPlay: () => this.startMode(GameMode.DailyChallenge),
-          onClose: () => this.openMainMenu(),
-        });
+        const today = this.daily.today();
+        const name = this.playerNameForBoard();
+        void this.leaderboardSys
+          .buildDailyBoard(today.date, today.seed, score, name)
+          .then((snapshot) => {
+            this.dailyScreen.open(this.save, this.daily, snapshot, {
+              onPlay: () => this.startMode(GameMode.DailyChallenge),
+              onClose: () => this.openMainMenu(),
+            });
+          });
       },
       onTutorial: () => {
         this.startMode(GameMode.EndlessClimb);
         this.startTutorial();
       },
+      onSetName: () => this.openNamePrompt(),
+    });
+  }
+
+  /** Open the name prompt, returning to the main menu afterwards. */
+  openNamePrompt(): void {
+    this.namePrompt.open(this.save.data.playerName ?? '', {
+      onSave: (name) => {
+        this.setPlayerName(name);
+        this.openMainMenu();
+        this.toast.show(`Name set to ${name}.`);
+      },
+      onCancel: () => this.openMainMenu(),
     });
   }
 
@@ -1002,7 +1059,11 @@ export class Game {
       this.mainMenu.close();
       this.dailyScreen.close();
       this.gameOver.close();
-      void this.crazy.requestAd('midgame', 240).finally(() => this.startMode(mode));
+      this.showPrerollOverlay();
+      void this.crazy.requestAd('midgame', 240).finally(() => {
+        this.hidePrerollOverlay();
+        this.startMode(mode);
+      });
       return;
     }
     this.prerollShown = true;
@@ -1053,6 +1114,7 @@ export class Game {
         this.camera.shake(5);
         this.particles.burst(e.position.x, e.position.y, 18, e.obstacle.color, { speed: 0.8 });
         this.haptics.trigger('hookConnect');
+        this.tutorial?.notify('hookConnect');
         if (e.perfectAnchor) {
           this.scoring.addBonus(50);
           this.screen.addFloatingText('PERFECT ANCHOR', e.position.x, e.position.y - 12, '#00ff8a', { size: 14 });
@@ -1062,6 +1124,7 @@ export class Game {
         this.combo.onHookRelease();
         this.sfx.hookRelease();
         this.sfx.swingWhoosh(vel.len());
+        this.tutorial?.notify('hookRelease');
         if (this.combo.combo > 1 && this.combo.combo % 3 === 0) {
           this.sfx.combo(this.combo.combo);
           this.camera.flash(0.2);
@@ -1075,6 +1138,7 @@ export class Game {
         this.camera.chroma(0.4);
         this.particles.burst(this.player!.pos.x, this.player!.pos.y, 14, '#ff2bff', { speed: 0.5 });
         this.haptics.trigger('dash');
+        this.tutorial?.notify('dash');
       },
       onDeath: (cause) => {
         this.lastCause = cause;
@@ -1182,7 +1246,7 @@ export class Game {
       }
       this.raceParticipants.unshift({
         id: 'player',
-        name: 'YOU',
+        name: this.playerNameForBoard(),
         color: '#00f3ff',
         altitude: 0,
         finished: false,
@@ -1215,44 +1279,153 @@ export class Game {
   }
 
   private buildTimeAttackLayout(): Obstacle[] {
-    // Hand-pick a deterministic course toward 5000m
+    // Hand-crafted 5000m route. The course is divided into four narrative acts:
+    //   0–1000m  Tutorial corridor — generous platforms, no hazards.
+    //   1000–2500m  Pendulum bowls — energy nodes paired with side spikes.
+    //   2500–3800m  S-bend gauntlet — alternating tight chains with bouncy panels.
+    //   3800–5000m  Final ascent — sparse anchors, big swings, the medal threshold.
+    // Each entry is [yMeters, kind, x, widthOrSize, optionalNote].
+    type Spec =
+      | { y: number; kind: 'platform' | 'energy' | 'bouncy'; x: number; w?: number; h?: number }
+      | { y: number; kind: 'spike'; x: number; w: number }
+      | { y: number; kind: 'spark' | 'shield-pickup' | 'slow-pickup'; x: number };
+    const route: Spec[] = [
+      // Act 1 — gentle ascent (0–1000m).
+      { y: 80, kind: 'platform', x: -40, w: 220 },
+      { y: 220, kind: 'platform', x: 80, w: 200 },
+      { y: 360, kind: 'platform', x: -120, w: 200 },
+      { y: 500, kind: 'energy', x: 60 },
+      { y: 640, kind: 'platform', x: -180, w: 180 },
+      { y: 760, kind: 'platform', x: 100, w: 200 },
+      { y: 900, kind: 'energy', x: -40 },
+
+      // Act 2 — pendulum bowls (1000–2500m).
+      { y: 1040, kind: 'platform', x: -220, w: 140 },
+      { y: 1040, kind: 'platform', x: 120, w: 140 },
+      { y: 1180, kind: 'energy', x: 0 },
+      { y: 1220, kind: 'spike', x: 160, w: 80 },
+      { y: 1340, kind: 'platform', x: -240, w: 160 },
+      { y: 1340, kind: 'spike', x: 100, w: 120 },
+      { y: 1480, kind: 'energy', x: -60 },
+      { y: 1560, kind: 'spark', x: 60 },
+      { y: 1620, kind: 'platform', x: 160, w: 160 },
+      { y: 1720, kind: 'shield-pickup', x: 0 },
+      { y: 1800, kind: 'energy', x: 120 },
+      { y: 1880, kind: 'spike', x: -200, w: 110 },
+      { y: 1960, kind: 'platform', x: -60, w: 200 },
+      { y: 2120, kind: 'energy', x: -200 },
+      { y: 2280, kind: 'energy', x: 200 },
+      { y: 2440, kind: 'platform', x: 0, w: 200 },
+
+      // Act 3 — S-bend gauntlet (2500–3800m).
+      { y: 2580, kind: 'bouncy', x: -240, w: 100 },
+      { y: 2640, kind: 'energy', x: 160 },
+      { y: 2720, kind: 'spike', x: -120, w: 100 },
+      { y: 2780, kind: 'platform', x: 140, w: 180 },
+      { y: 2900, kind: 'spark', x: -80 },
+      { y: 2960, kind: 'energy', x: -200 },
+      { y: 3060, kind: 'bouncy', x: 200, w: 120 },
+      { y: 3160, kind: 'energy', x: 80 },
+      { y: 3240, kind: 'spike', x: -160, w: 90 },
+      { y: 3280, kind: 'platform', x: 140, w: 160 },
+      { y: 3400, kind: 'energy', x: -120 },
+      { y: 3480, kind: 'slow-pickup', x: 60 },
+      { y: 3560, kind: 'energy', x: 220 },
+      { y: 3680, kind: 'platform', x: -180, w: 180 },
+      { y: 3800, kind: 'energy', x: 60 },
+
+      // Act 4 — final ascent (3800–5000m).
+      { y: 3960, kind: 'energy', x: -120 },
+      { y: 4080, kind: 'platform', x: 160, w: 140 },
+      { y: 4220, kind: 'energy', x: -40 },
+      { y: 4360, kind: 'spike', x: 180, w: 110 },
+      { y: 4380, kind: 'energy', x: 80 },
+      { y: 4520, kind: 'bouncy', x: -180, w: 100 },
+      { y: 4680, kind: 'energy', x: 200 },
+      { y: 4820, kind: 'energy', x: -100 },
+      { y: 4960, kind: 'platform', x: 0, w: 280 },
+    ];
+    let nextId = 100000;
     const obs: Obstacle[] = [];
-    let id = 100000;
-    let y = -160;
-    let x = 0;
-    while (-y / 10 < TIME_ATTACK_TARGET_ALT + 30) {
-      const dx = Math.sin(-y / 220) * 240;
-      x = dx;
-      const isEnergy = (-y / 200) % 4 < 1;
-      obs.push({
-        id: id++,
-        x: x - 90,
-        y,
-        width: isEnergy ? 40 : 180,
-        height: isEnergy ? 40 : 20,
-        kind: isEnergy ? 'energy' : 'platform',
-        color: isEnergy ? '#a45cff' : '#00f3ff',
-        grappleable: true,
-        lethal: false,
-        bouncy: false,
-        pickup: false,
-        collected: false,
-        unstableTimer: 0,
-        unstableTriggered: false,
-        amp: 0,
-        driftAngle: 0,
-        driftSpeed: 0,
-        lastX: x - 90,
-        pulse: 0,
-      });
-      // Side spike for risk
-      if ((-y / 200) % 7 < 1) {
+    for (const spec of route) {
+      const y = -spec.y * 10;
+      if (spec.kind === 'platform') {
+        const width = spec.w ?? 180;
+        const height = spec.h ?? 20;
         obs.push({
-          id: id++,
-          x: x + 140,
-          y: y + 30,
-          width: 80,
-          height: 12,
+          id: nextId++,
+          x: spec.x - width / 2,
+          y,
+          width,
+          height,
+          kind: 'platform',
+          color: '#00f3ff',
+          grappleable: true,
+          lethal: false,
+          bouncy: false,
+          pickup: false,
+          collected: false,
+          unstableTimer: 0,
+          unstableTriggered: false,
+          amp: 0,
+          driftAngle: 0,
+          driftSpeed: 0,
+          lastX: spec.x - width / 2,
+          pulse: 0,
+        });
+      } else if (spec.kind === 'energy') {
+        const size = spec.w ?? 38;
+        obs.push({
+          id: nextId++,
+          x: spec.x - size / 2,
+          y,
+          width: size,
+          height: size,
+          kind: 'energy',
+          color: '#a45cff',
+          grappleable: true,
+          lethal: false,
+          bouncy: false,
+          pickup: false,
+          collected: false,
+          unstableTimer: 0,
+          unstableTriggered: false,
+          amp: 0,
+          driftAngle: 0,
+          driftSpeed: 0,
+          lastX: spec.x - size / 2,
+          pulse: 0,
+        });
+      } else if (spec.kind === 'bouncy') {
+        const width = spec.w ?? 110;
+        obs.push({
+          id: nextId++,
+          x: spec.x - width / 2,
+          y,
+          width,
+          height: 16,
+          kind: 'bouncy',
+          color: '#00ff8a',
+          grappleable: true,
+          lethal: false,
+          bouncy: true,
+          pickup: false,
+          collected: false,
+          unstableTimer: 0,
+          unstableTriggered: false,
+          amp: 0,
+          driftAngle: 0,
+          driftSpeed: 0,
+          lastX: spec.x - width / 2,
+          pulse: 0,
+        });
+      } else if (spec.kind === 'spike') {
+        obs.push({
+          id: nextId++,
+          x: spec.x - spec.w / 2,
+          y,
+          width: spec.w,
+          height: 14,
           kind: 'spike',
           color: '#ff255e',
           grappleable: false,
@@ -1265,11 +1438,34 @@ export class Game {
           amp: 0,
           driftAngle: 0,
           driftSpeed: 0,
-          lastX: x + 140,
+          lastX: spec.x - spec.w / 2,
+          pulse: 0,
+        });
+      } else {
+        // Pickup (spark, shield, slow).
+        obs.push({
+          id: nextId++,
+          x: spec.x - 14,
+          y,
+          width: spec.kind === 'spark' ? 16 : 28,
+          height: spec.kind === 'spark' ? 16 : 28,
+          kind: spec.kind,
+          color:
+            spec.kind === 'spark' ? '#ffd400' : spec.kind === 'shield-pickup' ? '#00ff8a' : '#a4f0ff',
+          grappleable: false,
+          lethal: false,
+          bouncy: false,
+          pickup: true,
+          collected: false,
+          unstableTimer: 0,
+          unstableTriggered: false,
+          amp: 0,
+          driftAngle: 0,
+          driftSpeed: 0,
+          lastX: spec.x - 14,
           pulse: 0,
         });
       }
-      y -= 200;
     }
     return obs;
   }
@@ -1367,10 +1563,12 @@ export class Game {
 
     // Race results
     let raceResult: GameOverContext['raceResult'] | undefined;
+    let racePodium: GameOverContext['racePodium'] | undefined;
     if (this.mode === GameMode.BotRace) {
       const playerPart = this.raceParticipants.find((p) => p.id === 'player');
-      if (playerPart && !playerPart.finished) {
-        playerPart.altitude = altitude;
+      if (playerPart) {
+        playerPart.name = this.playerNameForBoard();
+        if (!playerPart.finished) playerPart.altitude = altitude;
       }
       const sorted = [...this.raceParticipants].sort((a, b) => {
         if (a.finished && b.finished) return (a.finishTime ?? 0) - (b.finishTime ?? 0);
@@ -1380,6 +1578,15 @@ export class Game {
       });
       const myIdx = sorted.findIndex((p) => p.id === 'player');
       raceResult = { position: myIdx + 1, total: sorted.length };
+      racePodium = sorted.map((p, i) => ({
+        position: i + 1,
+        name: p.name,
+        color: p.color,
+        altitude: p.altitude,
+        isYou: p.id === 'player',
+        finished: p.finished,
+        finishTime: p.finishTime,
+      }));
       // "Beat <bot>" unlocks when the player finishes ahead of that bot individually.
       const sparkyIdx = sorted.findIndex((p) => p.id === 'sparky');
       const phaseIdx = sorted.findIndex((p) => p.id === 'phase');
@@ -1405,13 +1612,19 @@ export class Game {
       const submitted = this.dailyRankedThisAttempt;
       this.daily.recordRun(score, altitude, this.combo.peak, submitted);
       if (submitted) {
-        const board = this.leaderboardSys.generateDaily(this.daily.today().seed, score);
-        const myEntry = board.find((b) => b.isYou);
-        if (myEntry) {
-          const pct = (myEntry.rank - 1) / board.length;
-          if (pct <= 0.5) this.achievements.unlock('daily-top50', this.notifyUnlock);
-          if (pct <= 0.1) this.achievements.unlock('daily-top10', this.notifyUnlock);
-        }
+        const today = this.daily.today();
+        const name = this.playerNameForBoard();
+        // Fire-and-forget submission to the backend, then check placement achievements.
+        void this.leaderboardSys
+          .submitDaily(today.date, today.seed, name, score, altitude)
+          .then(() => this.leaderboardSys.buildDailyBoard(today.date, today.seed, score, name))
+          .then((snapshot) => {
+            const myEntry = snapshot.entries.find((b) => b.isYou);
+            if (!myEntry) return;
+            const pct = (myEntry.rank - 1) / Math.max(1, snapshot.entries.length);
+            if (pct <= 0.5) this.achievements.unlock('daily-top50', this.notifyUnlock);
+            if (pct <= 0.1) this.achievements.unlock('daily-top10', this.notifyUnlock);
+          });
       }
     }
 
@@ -1465,7 +1678,10 @@ export class Game {
         !this.hasUsedRevive &&
         this.player.dead &&
         (this.mode === GameMode.EndlessClimb || this.mode === GameMode.DailyChallenge),
+      adsAvailable: this.crazy.available,
+      dailyStreak: this.save.data.dailyStreak,
       ...(raceResult ? { raceResult } : {}),
+      ...(racePodium ? { racePodium } : {}),
     };
     void this.maybeShowAd();
     this.gameOver.open(ctx, {
@@ -1479,6 +1695,31 @@ export class Game {
   private async maybeShowAd(): Promise<void> {
     if (!this.crazy.available) return;
     await this.crazy.requestAd('midgame', 240);
+  }
+
+  private prerollEl: HTMLDivElement | null = null;
+
+  private showPrerollOverlay(): void {
+    if (this.prerollEl) return;
+    const el = document.createElement('div');
+    el.className = 'preroll-overlay';
+    el.innerHTML = `
+      <div class="preroll-card">
+        <div class="preroll-logo gradient-text">GRAPPLE<br>GLIDERS</div>
+        <div class="preroll-spinner"></div>
+        <div class="preroll-label">Loading…</div>
+      </div>
+    `;
+    this.overlayRoot.appendChild(el);
+    this.prerollEl = el;
+  }
+
+  private hidePrerollOverlay(): void {
+    if (!this.prerollEl) return;
+    this.prerollEl.classList.add('fading');
+    const el = this.prerollEl;
+    this.prerollEl = null;
+    setTimeout(() => el.remove(), 280);
   }
 
   private async requestRevive(): Promise<void> {
@@ -1536,6 +1777,8 @@ export class Game {
       elapsedSeconds: this.elapsedSeconds,
       rewards: { xp: 0, sparks: 0, bonusXp: 0, levelUps: [] },
       canRevive: false,
+      adsAvailable: this.crazy.available,
+      dailyStreak: this.save.data.dailyStreak,
     };
   }
 
@@ -1564,6 +1807,7 @@ export class Game {
             });
           },
           onTutorialReset: () => undefined,
+          onNameChange: () => undefined,
         }),
     });
   }
@@ -1575,6 +1819,10 @@ export class Game {
     this.particles.clear();
     this.screen.clear();
     this.trailRenderer.reset();
+    if (this.tutorial) {
+      this.tutorial.destroy();
+      this.tutorial = null;
+    }
   }
 
   private ensureTouchControls(): void {
@@ -1602,16 +1850,57 @@ export class Game {
     wrap.appendChild(dash);
     this.touchRoot.appendChild(wrap);
     document.body.appendChild(pause);
+
+    // Optional on-screen steering arrows. Always show on touch devices so the
+    // control is discoverable; players can hide via Settings if they prefer
+    // the gesture-only experience.
+    let steerEl: HTMLDivElement | null = null;
+    if (this.save.data.settings.mobileSteering) {
+      steerEl = document.createElement('div');
+      steerEl.className = 'touch-steer';
+      steerEl.innerHTML = `
+        <button class="touch-btn steer-btn" data-dir="-1" aria-label="Steer left">◀</button>
+        <button class="touch-btn steer-btn" data-dir="1" aria-label="Steer right">▶</button>
+      `;
+      const setSoft = (v: -1 | 0 | 1): void => this.input.setSoftSteer(v);
+      const left = steerEl.querySelector<HTMLButtonElement>('[data-dir="-1"]')!;
+      const right = steerEl.querySelector<HTMLButtonElement>('[data-dir="1"]')!;
+      const bind = (el: HTMLElement, dir: -1 | 1): void => {
+        const start = (e: Event): void => {
+          e.preventDefault();
+          e.stopPropagation();
+          setSoft(dir);
+        };
+        const end = (e: Event): void => {
+          e.preventDefault();
+          e.stopPropagation();
+          setSoft(0);
+        };
+        el.addEventListener('touchstart', start, { passive: false });
+        el.addEventListener('touchend', end, { passive: false });
+        el.addEventListener('touchcancel', end, { passive: false });
+        el.addEventListener('mousedown', start);
+        el.addEventListener('mouseup', end);
+        el.addEventListener('mouseleave', end);
+      };
+      bind(left, -1);
+      bind(right, 1);
+      document.body.appendChild(steerEl);
+    }
+
     this.touchControlsEl = wrap;
-    (wrap as unknown as { _pauseBtn: HTMLButtonElement })._pauseBtn = pause;
+    (wrap as unknown as { _pauseBtn: HTMLButtonElement; _steerEl: HTMLDivElement | null })._pauseBtn = pause;
+    (wrap as unknown as { _pauseBtn: HTMLButtonElement; _steerEl: HTMLDivElement | null })._steerEl = steerEl;
   }
 
   private removeTouchControls(): void {
     if (!this.touchControlsEl) return;
-    const pauseBtn = (this.touchControlsEl as unknown as { _pauseBtn: HTMLButtonElement })._pauseBtn;
-    pauseBtn?.remove();
+    const handles = this.touchControlsEl as unknown as { _pauseBtn?: HTMLButtonElement; _steerEl?: HTMLDivElement | null };
+    handles._pauseBtn?.remove();
+    handles._steerEl?.remove();
     this.touchControlsEl.remove();
     this.touchControlsEl = null;
+    this.input.setSoftSteer(0);
   }
 
   destroy(): void {

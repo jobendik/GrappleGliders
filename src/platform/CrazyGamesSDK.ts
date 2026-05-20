@@ -190,4 +190,23 @@ export class CrazyGamesPlatform {
       },
     };
   }
+
+  /** Resolve the player's CrazyGames username, or null if no account / not available. */
+  async getUsername(): Promise<string | null> {
+    if (!this.sdk) return null;
+    try {
+      const user = this.sdk.user;
+      if (!user?.getUser) return null;
+      const accountOk = user.isUserAccountAvailable ? await user.isUserAccountAvailable() : true;
+      if (!accountOk) return null;
+      const profile = await user.getUser();
+      const name = profile?.username?.trim();
+      return name && name.length > 0 ? name : null;
+    } catch {
+      // The "disabled" SDK environment throws on getter access — disable for future calls.
+      this.sdk = null;
+      this.available = false;
+      return null;
+    }
+  }
 }

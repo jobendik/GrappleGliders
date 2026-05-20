@@ -12,6 +12,11 @@ export class AudioEngine {
   musicEnabled: boolean = true;
   sfxEnabled: boolean = true;
   unlocked: boolean = false;
+  /** Last user-set music volume (0..1). Restored when re-enabling. */
+  private musicVolume = 0.5;
+  /** Last user-set sfx volume (0..1). Restored when re-enabling. */
+  private sfxVolume = 0.9;
+  private masterVolume = 0.65;
 
   /** Initialise on user gesture so iOS allows audio playback. */
   unlock(): void {
@@ -22,13 +27,13 @@ export class AudioEngine {
     try {
       this.ctx = new Ctor();
       const master = this.ctx.createGain();
-      master.gain.value = 0.65;
+      master.gain.value = this.enabled ? this.masterVolume : 0;
       master.connect(this.ctx.destination);
       const music = this.ctx.createGain();
-      music.gain.value = 0.5;
+      music.gain.value = this.musicEnabled ? this.musicVolume : 0;
       music.connect(master);
       const sfx = this.ctx.createGain();
-      sfx.gain.value = 0.9;
+      sfx.gain.value = this.sfxEnabled ? this.sfxVolume : 0;
       sfx.connect(master);
       this.master = master;
       this.musicBus = music;
@@ -48,16 +53,23 @@ export class AudioEngine {
     if (bus === 'master') this.enabled = enabled;
     if (bus === 'music') this.musicEnabled = enabled;
     if (bus === 'sfx') this.sfxEnabled = enabled;
-    if (this.master) this.master.gain.value = this.enabled ? 0.65 : 0;
-    if (this.musicBus) this.musicBus.gain.value = this.musicEnabled ? 0.5 : 0;
-    if (this.sfxBus) this.sfxBus.gain.value = this.sfxEnabled ? 0.9 : 0;
+    if (this.master) this.master.gain.value = this.enabled ? this.masterVolume : 0;
+    if (this.musicBus) this.musicBus.gain.value = this.musicEnabled ? this.musicVolume : 0;
+    if (this.sfxBus) this.sfxBus.gain.value = this.sfxEnabled ? this.sfxVolume : 0;
   }
 
   setVolume(bus: AudioBus, value: number): void {
     const v = Math.max(0, Math.min(1, value));
-    if (bus === 'master' && this.master) this.master.gain.value = v;
-    if (bus === 'music' && this.musicBus) this.musicBus.gain.value = v;
-    if (bus === 'sfx' && this.sfxBus) this.sfxBus.gain.value = v;
+    if (bus === 'master') {
+      this.masterVolume = v;
+      if (this.master) this.master.gain.value = this.enabled ? v : 0;
+    } else if (bus === 'music') {
+      this.musicVolume = v;
+      if (this.musicBus) this.musicBus.gain.value = this.musicEnabled ? v : 0;
+    } else if (bus === 'sfx') {
+      this.sfxVolume = v;
+      if (this.sfxBus) this.sfxBus.gain.value = this.sfxEnabled ? v : 0;
+    }
   }
 
   get sfxDest(): AudioNode | null {

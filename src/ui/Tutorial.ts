@@ -1,59 +1,174 @@
+/**
+ * Interactive onboarding. Each step waits for the player to perform the
+ * required action (fire a grapple, release it, dash) before advancing, with a
+ * timed fallback so anyone stuck on a step still progresses. The UI highlights
+ * the relevant button on mobile and shows a clear hint card.
+ */
+
+export type TutorialAction = 'hookConnect' | 'hookRelease' | 'dash' | 'altitude';
+
 interface TutorialStep {
+  /** Hint message shown to the player. */
   message: string;
-  durationMs: number;
+  /** Action required to advance. `null` means timed only. */
+  require: TutorialAction | null;
+  /** ms before the step auto-advances even if the action wasn't completed. */
+  fallbackMs: number;
+  /** Optional CSS selector for an element to highlight while the step is active. */
+  highlight?: string;
+  /** Optional altitude threshold for the 'altitude' action. */
+  threshold?: number;
 }
 
 const STEPS: TutorialStep[] = [
-  { message: 'Tap and hold anywhere to fire your grapple.', durationMs: 5000 },
-  { message: 'Release to fling — the harder the swing, the bigger the launch.', durationMs: 5000 },
-  { message: 'Right-click, Space, or two-finger swipe down to dash.', durationMs: 5000 },
-  { message: 'Avoid the rising lava. Climb as high as you can.', durationMs: 4500 },
+  {
+    message: 'Aim at a glowing platform — click & HOLD (or tap & hold on mobile) to fire your grapple.',
+    require: 'hookConnect',
+    fallbackMs: 15000,
+  },
+  {
+    message: 'Now RELEASE to fling forward. Bigger swings launch you higher.',
+    require: 'hookRelease',
+    fallbackMs: 12000,
+  },
+  {
+    message: 'Press SPACE (desktop) or tap the DASH button (mobile) to burst through gaps.',
+    require: 'dash',
+    fallbackMs: 12000,
+    highlight: '.touch-btn.dash',
+  },
+  {
+    message: 'Lava is rising — climb fast. Reach 100m to finish the tutorial.',
+    require: 'altitude',
+    threshold: 100,
+    fallbackMs: 30000,
+  },
 ];
 
 export class Tutorial {
-  private element: HTMLDivElement;
+  private card: HTMLDivElement;
+  private progress: HTMLDivElement;
   private idx = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private highlightedEl: HTMLElement | null = null;
   private complete = false;
+  private currentStep: TutorialStep | null = null;
+  private onDone: (() => void) | null = null;
+  private skipBtn: HTMLButtonElement;
 
   constructor() {
-    this.element = document.createElement('div');
-    this.element.className = 'tutorial-tip';
-    this.element.style.display = 'none';
-    document.body.appendChild(this.element);
+    this.card = document.createElement('div');
+    this.card.className = 'tutorial-card';
+    this.card.style.display = 'none';
+    this.card.innerHTML = `
+      <div class="tutorial-step-label" data-el="label">Step 1 of ${STEPS.length}</div>
+      <div class="tutorial-message" data-el="message"></div>
+      <div class="tutorial-progress" data-el="progress">
+        ${STEPS.map(() => '<span></span>').join('')}
+      </div>
+      <button class="tutorial-skip" data-el="skip">Skip Tutorial</button>
+    `;
+    document.body.appendChild(this.card);
+    this.progress = this.card.querySelector<HTMLDivElement>('[data-el="progress"]')!;
+    this.skipBtn = this.card.querySelector<HTMLButtonElement>('[data-el="skip"]')!;
+    const skipHandler = (e: Event): void => {
+      e.stopPropagation();
+      e.preventDefault();
+      this.finish();
+    };
+    this.skipBtn.addEventListener('pointerdown', skipHandler);
+    this.skipBtn.addEventListener('click', skipHandler);
   }
 
   start(onDone: () => void): void {
+    this.onDone = onDone;
     this.complete = false;
     this.idx = 0;
-    this.element.style.display = 'block';
-    this.next(onDone);
+    this.card.style.display = 'flex';
+    this.next();
   }
 
-  private next(onDone: () => void): void {
+  private next(): void {
+    this.clearHighlight();
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
     if (this.idx >= STEPS.length) {
-      this.element.style.display = 'none';
-      this.complete = true;
-      onDone();
+      this.finish();
       return;
     }
     const step = STEPS[this.idx]!;
-    this.element.textContent = step.message;
-    this.timer = setTimeout(() => {
-      this.idx += 1;
-      this.next(onDone);
-    }, step.durationMs);
+    this.currentStep = step;
+    const labelEl = this.card.querySelector<HTMLElement>('[data-el="label"]')!;
+    const messageEl = this.card.querySelector<HTMLElement>('[data-el="message"]')!;
+    labelEl.textContent = `Step ${this.idx + 1} of ${STEPS.length}`;
+    messageEl.textContent = step.message;
+    this.updateProgress();
+    if (step.highlight) {
+      // Defer one frame so we pick up freshly-created touch controls.
+      requestAnimationFrame(() => this.applyHighlight(step.highlight!));
+    }
+    this.timer = setTimeout(() => this.advance(), step.fallbackMs);
+  }
+
+  private applyHighlight(selector: string): void {
+    const el = document.querySelector<HTMLElement>(selector);
+    if (!el) return;
+    el.classList.add('tutorial-highlight');
+    this.highlightedEl = el;
+  }
+
+  private clearHighlight(): void {
+    if (this.highlightedEl) {
+      this.highlightedEl.classList.remove('tutorial-highlight');
+      this.highlightedEl = null;
+    }
+  }
+
+  private updateProgress(): void {
+    const dots = this.progress.querySelectorAll('span');
+    dots.forEach((d, i) => {
+      d.classList.toggle('done', i < this.idx);
+      d.classList.toggle('active', i === this.idx);
+    });
+  }
+
+  /** Called by the game when the player performs the given action. */
+  notify(action: TutorialAction, payload?: { altitude?: number }): void {
+    if (this.complete || !this.currentStep) return;
+    if (this.currentStep.require !== action) return;
+    if (action === 'altitude') {
+      const threshold = this.currentStep.threshold ?? 0;
+      if ((payload?.altitude ?? 0) < threshold) return;
+    }
+    this.advance();
+  }
+
+  private advance(): void {
+    if (this.complete) return;
+    this.idx += 1;
+    this.next();
+  }
+
+  private finish(): void {
+    if (this.complete) return;
+    this.complete = true;
+    this.clearHighlight();
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.card.style.display = 'none';
+    this.onDone?.();
   }
 
   skip(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.element.style.display = 'none';
-    this.complete = true;
+    this.finish();
   }
 
   destroy(): void {
+    this.clearHighlight();
     if (this.timer) clearTimeout(this.timer);
-    this.element.remove();
+    this.card.remove();
   }
 
   isComplete(): boolean {

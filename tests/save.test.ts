@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SaveSystem, defaultSave } from '../src/systems/SaveSystem';
 import { ProgressionSystem, levelFromXP, xpForLevel } from '../src/systems/ProgressionSystem';
 import { UnlockSystem } from '../src/systems/UnlockSystem';
-import { LeaderboardSystem } from '../src/systems/LeaderboardSystem';
+import { LeaderboardSystem, LocalLeaderboardBackend } from '../src/systems/LeaderboardSystem';
 
 class MemoryStorage {
   private map = new Map<string, string>();
@@ -155,21 +155,50 @@ describe('UnlockSystem', () => {
 });
 
 describe('LeaderboardSystem', () => {
-  it('generates a deterministic board of the requested size with the player ranked', () => {
-    const sys = new LeaderboardSystem();
-    const a = sys.generateDaily(12345, 5000, 'TESTER', 30);
-    const b = sys.generateDaily(12345, 5000, 'TESTER', 30);
-    expect(a.length).toBe(30);
-    expect(a.map((e) => e.score)).toEqual(b.map((e) => e.score));
-    expect(a.filter((e) => e.isYou)).toHaveLength(1);
+  it('generates a deterministic board of the requested size with the player ranked', async () => {
+    const save = new SaveSystem();
+    const sys = new LeaderboardSystem(new LocalLeaderboardBackend(save));
+    const a = await sys.buildDailyBoard('2024-01-01', 12345, 5000, 'TESTER', 30);
+    const b = await sys.buildDailyBoard('2024-01-01', 12345, 5000, 'TESTER', 30);
+    expect(a.entries.length).toBe(30);
+    expect(a.entries.map((e) => e.score)).toEqual(b.entries.map((e) => e.score));
+    expect(a.entries.filter((e) => e.isYou)).toHaveLength(1);
   });
 
-  it('places the player consistently based on their score', () => {
-    const sys = new LeaderboardSystem();
-    const low = sys.generateDaily(987, 50, 'TESTER', 60);
-    const high = sys.generateDaily(987, 99_999_999, 'TESTER', 60);
-    const lowRank = low.find((e) => e.isYou)!.rank;
-    const highRank = high.find((e) => e.isYou)!.rank;
+  it('places the player consistently based on their score', async () => {
+    const save = new SaveSystem();
+    const sys = new LeaderboardSystem(new LocalLeaderboardBackend(save));
+    const low = await sys.buildDailyBoard('2024-01-02', 987, 50, 'TESTER', 60);
+    const high = await sys.buildDailyBoard('2024-01-02', 987, 99_999_999, 'TESTER', 60);
+    const lowRank = low.entries.find((e) => e.isYou)!.rank;
+    const highRank = high.entries.find((e) => e.isYou)!.rank;
     expect(highRank).toBeLessThan(lowRank);
+  });
+
+  it('persists real submissions and surfaces them on the board', async () => {
+    const save = new SaveSystem();
+    const sys = new LeaderboardSystem(new LocalLeaderboardBackend(save));
+    await sys.submitDaily('2024-03-01', 4242, 'ASTRA', 12000, 1200);
+    await sys.submitDaily('2024-03-01', 4242, 'ZED', 8000, 800);
+    const snapshot = await sys.buildDailyBoard('2024-03-01', 4242, 9999, 'ASTRA', 50);
+    expect(snapshot.hasRealSubmissions).toBe(true);
+    const myRow = snapshot.entries.find((e) => e.isYou);
+    expect(myRow).toBeTruthy();
+    // ASTRA already submitted 12000, which beats the 9999 in this build; the snapshot keeps the higher.
+    expect(myRow!.score).toBeGreaterThanOrEqual(12000);
+    // ZED appears as a real (non-bot) entry.
+    const zed = snapshot.entries.find((e) => e.name === 'ZED');
+    expect(zed?.isBot).toBe(false);
+  });
+
+  it('upgrades an existing submission only when the new score is higher', async () => {
+    const save = new SaveSystem();
+    const sys = new LeaderboardSystem(new LocalLeaderboardBackend(save));
+    await sys.submitDaily('2024-04-01', 1, 'KAI', 1000, 100);
+    await sys.submitDaily('2024-04-01', 1, 'KAI', 500, 50);
+    await sys.submitDaily('2024-04-01', 1, 'KAI', 1500, 150);
+    const kai = save.data.leaderboardSubmissions.filter((s) => s.name === 'KAI');
+    expect(kai).toHaveLength(1);
+    expect(kai[0]!.score).toBe(1500);
   });
 });
