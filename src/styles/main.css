@@ -1218,6 +1218,193 @@ kbd {
 }
 .share-hint.visible { color: var(--cyan); }
 
+/* End-of-run unlock progress bar — shows "X Sparks toward Y" with a fill
+   that highlights what THIS run contributed (brighter cyan over the baseline). */
+.unlock-progress {
+  margin: 14px 0 6px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, rgba(0, 243, 255, 0.10), rgba(255, 43, 255, 0.06));
+  border: 1px solid color-mix(in srgb, var(--cyan) 32%, transparent);
+}
+
+.unlock-progress-track {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(7, 12, 28, 0.7);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.unlock-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  transition: width 380ms cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+
+.unlock-progress-fill.base {
+  background: linear-gradient(90deg, rgba(0, 243, 255, 0.55), rgba(0, 243, 255, 0.85));
+}
+
+.unlock-progress-fill.earned {
+  background: linear-gradient(90deg, rgba(0, 243, 255, 0.6), rgba(255, 212, 0, 0.95));
+  box-shadow: 0 0 18px rgba(255, 212, 0, 0.5);
+  animation: unlock-bar-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes unlock-bar-pulse {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.25); }
+}
+
+.unlock-progress-label {
+  font-family: var(--ui);
+  font-size: 13px;
+  color: var(--white);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.unlock-progress-label strong {
+  color: var(--cyan);
+  font-weight: 700;
+}
+
+/* End-of-run trick summary — chip row showing the named tricks landed. */
+.trick-summary {
+  margin: 14px 0 4px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, rgba(255, 43, 255, 0.10), rgba(255, 157, 46, 0.07));
+  border: 1px solid color-mix(in srgb, var(--magenta) 28%, transparent);
+}
+
+.trick-summary-header {
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  color: rgba(234, 255, 255, 0.7);
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.trick-summary-header em {
+  color: var(--gold);
+  font-style: normal;
+  margin-left: 8px;
+}
+
+.trick-summary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+}
+
+.trick-chip {
+  --trick-color: var(--cyan);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--display);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  background: rgba(7, 12, 28, 0.75);
+  border: 1px solid var(--trick-color);
+  color: var(--trick-color);
+  text-transform: uppercase;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--trick-color) 28%, transparent);
+}
+
+.trick-chip em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--white);
+  opacity: 0.85;
+}
+
+.trick-chip-more {
+  font-family: var(--ui);
+  font-size: 11px;
+  padding: 4px 8px;
+  color: rgba(234, 255, 255, 0.55);
+  align-self: center;
+}
+
+/* Mid-run trick callout — large floating banner above the player. */
+.trick-callout {
+  position: absolute;
+  inset: 22% 0 auto 0;
+  pointer-events: none;
+  text-align: center;
+  font-family: var(--display);
+  font-size: 38px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  color: #fff;
+  text-shadow:
+    0 0 18px var(--trick-color, var(--cyan)),
+    0 0 4px #000;
+  animation: trick-pop 1.05s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  z-index: 5;
+}
+
+.trick-callout em {
+  font-style: normal;
+  display: block;
+  font-size: 20px;
+  letter-spacing: 0.18em;
+  color: var(--gold);
+  margin-top: 4px;
+}
+
+@keyframes trick-pop {
+  0%   { opacity: 0; transform: scale(0.6) translateY(8px); }
+  20%  { opacity: 1; transform: scale(1.15) translateY(0); }
+  35%  { transform: scale(1) translateY(0); }
+  75%  { opacity: 1; transform: scale(1) translateY(-6px); }
+  100% { opacity: 0; transform: scale(0.95) translateY(-22px); }
+}
+
+/* Boss-wave warning banner. Appears at the top, pulses red. */
+.boss-wave-banner {
+  position: absolute;
+  inset: 12% 0 auto 0;
+  pointer-events: none;
+  text-align: center;
+  font-family: var(--display);
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: 0.22em;
+  color: #ff255e;
+  text-shadow:
+    0 0 24px #ff255e,
+    0 0 6px #000;
+  animation: boss-flash 1.6s ease-in-out forwards;
+  z-index: 4;
+}
+
+.boss-wave-banner em {
+  display: block;
+  font-size: 16px;
+  letter-spacing: 0.3em;
+  color: var(--gold);
+  font-style: normal;
+  margin-top: 8px;
+}
+
+@keyframes boss-flash {
+  0%   { opacity: 0; transform: scale(0.6); }
+  12%  { opacity: 1; transform: scale(1.05); }
+  22%  { transform: scale(1); }
+  86%  { opacity: 1; }
+  100% { opacity: 0; transform: scale(1) translateY(-12px); }
+}
+
 /* Streak nudge on game over screen — encourages return tomorrow. */
 .streak-nudge {
   margin: 12px 0 4px;
