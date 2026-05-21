@@ -1,6 +1,12 @@
 import { GameMode } from '../game/GameState';
 import { formatAltitude, formatScore, formatTimeMs } from '../utils/format';
 
+export interface ShareCardTrick {
+  name: string;
+  count: number;
+  color: string;
+}
+
 export interface ShareCardData {
   mode: GameMode;
   score: number;
@@ -12,6 +18,10 @@ export interface ShareCardData {
   dailyRank?: number;
   /** Page URL the player should share — usually the CrazyGames listing. */
   gameUrl: string;
+  /** Top tricks landed this run, in descending score order. Up to 4 are rendered. */
+  topTricks?: ShareCardTrick[];
+  /** Whether this run set a personal best — gets a star badge. */
+  isPersonalBest?: boolean;
 }
 
 const MODE_LABEL: Record<GameMode, string> = {
@@ -112,6 +122,10 @@ export const renderShareCard = (data: ShareCardData): HTMLCanvasElement => {
 
   // Top-left mode chip.
   drawChip(ctx, 56, 56, MODE_LABEL[data.mode], '#00f3ff');
+  // Personal-best badge — sits to the right of the mode chip when applicable.
+  if (data.isPersonalBest) {
+    drawChip(ctx, 240, 56, '★ NEW PB', '#ffd400');
+  }
 
   // Top-right brand wordmark.
   ctx.font = '700 26px "Orbitron", system-ui, sans-serif';
@@ -188,11 +202,32 @@ export const renderShareCard = (data: ShareCardData): HTMLCanvasElement => {
     }
   }
 
-  // Footer CTA.
-  ctx.font = '700 18px "Rajdhani", system-ui, sans-serif';
-  ctx.fillStyle = '#ffd400';
+  // Trick chip row — below the stat strip when tricks were landed this run.
+  if (data.topTricks && data.topTricks.length > 0) {
+    const tricks = data.topTricks.slice(0, 4);
+    let x = 56;
+    const y = stripY + stripH + 32;
+    ctx.textBaseline = 'middle';
+    for (const t of tricks) {
+      const label = t.count > 1 ? `${t.name} ×${t.count}` : t.name;
+      x += drawChip(ctx, x, y, label, t.color) + 10;
+    }
+  }
+
+  // Footer CTA — bigger and more enticing than before. Different verb per mode
+  // gives the share card a sharper, more competitive read.
+  const ctaPrimary = data.isPersonalBest ? 'CHASE THE TOP' : ctaText(data);
+  ctx.font = '900 26px "Orbitron", system-ui, sans-serif';
+  const cta = ctx.createLinearGradient(56, H - 30, 56, H - 4);
+  cta.addColorStop(0, '#ffd400');
+  cta.addColorStop(1, '#ff9d2e');
+  ctx.fillStyle = cta;
   ctx.textAlign = 'left';
-  ctx.fillText('CAN YOU BEAT IT?', 56, H - 14);
+  ctx.textBaseline = 'alphabetic';
+  ctx.shadowColor = 'rgba(255,212,0,0.4)';
+  ctx.shadowBlur = 14;
+  ctx.fillText(ctaPrimary, 56, H - 14);
+  ctx.shadowBlur = 0;
   ctx.font = '600 16px "Rajdhani", system-ui, sans-serif';
   ctx.fillStyle = 'rgba(234,255,255,0.85)';
   ctx.textAlign = 'right';
@@ -201,13 +236,31 @@ export const renderShareCard = (data: ShareCardData): HTMLCanvasElement => {
   return canvas;
 };
 
+/** Mode-aware call to action printed in the footer of the share card. */
+const ctaText = (data: ShareCardData): string => {
+  switch (data.mode) {
+    case GameMode.TimeAttack:
+      return 'CAN YOU GO FASTER?';
+    case GameMode.DailyChallenge:
+      return data.dailyRank ? 'CLIMB THE BOARD' : 'TAKE THE DAILY';
+    case GameMode.ComboRun:
+      return 'CHAIN A BIGGER COMBO';
+    case GameMode.BotRace:
+      return 'OUTPACE THE BOTS';
+    case GameMode.EndlessClimb:
+    default:
+      return 'CAN YOU CLIMB HIGHER?';
+  }
+};
+
+/** Render a pill-shaped chip at (x,y). Returns the chip width for layout chaining. */
 const drawChip = (
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   label: string,
   color: string,
-): void => {
+): number => {
   ctx.font = '700 16px "Rajdhani", system-ui, sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
@@ -223,6 +276,7 @@ const drawChip = (
   ctx.stroke();
   ctx.fillStyle = color;
   ctx.fillText(label, x + padX, y + 1);
+  return w;
 };
 
 const roundedRect = (
