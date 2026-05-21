@@ -85,8 +85,8 @@ const SAVE_VERSION = 1;
 const defaultSettings: SaveSettings = {
   sound: true,
   music: true,
-  sfxVolume: 0.9,
-  musicVolume: 0.5,
+  sfxVolume: 0.5,
+  musicVolume: 1.0,
   haptics: true,
   tutorialSeen: false,
   showGhost: true,

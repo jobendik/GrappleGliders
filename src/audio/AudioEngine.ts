@@ -10,6 +10,10 @@ export class AudioEngine {
   master: GainNode | null = null;
   musicBus: GainNode | null = null;
   sfxBus: GainNode | null = null;
+  /** Glues simultaneous SFX together and prevents peak clipping. */
+  sfxCompressor: DynamicsCompressorNode | null = null;
+  /** Final safety limiter on the master bus — catches any rogue peaks. */
+  masterLimiter: DynamicsCompressorNode | null = null;
   assets: AudioAssets;
   enabled: boolean = true;
   musicEnabled: boolean = true;
@@ -35,18 +39,40 @@ export class AudioEngine {
       this.ctx = new Ctor();
       const master = this.ctx.createGain();
       master.gain.value = this.enabled ? this.masterVolume : 0;
+      // Safety limiter — very gentle, only catches transients above -1 dBFS.
+      const masterLimiter = this.ctx.createDynamicsCompressor();
+      masterLimiter.threshold.value = -1;
+      masterLimiter.knee.value = 0;
+      masterLimiter.ratio.value = 20;
+      masterLimiter.attack.value = 0.001;
+      masterLimiter.release.value = 0.05;
+      masterLimiter.connect(master);
       master.connect(this.ctx.destination);
       const music = this.ctx.createGain();
       music.gain.value = this.musicEnabled ? this.musicVolume : 0;
-      music.connect(master);
+      music.connect(masterLimiter);
       const sfx = this.ctx.createGain();
       sfx.gain.value = this.sfxEnabled ? this.sfxVolume : 0;
-      sfx.connect(master);
+      // SFX-bus glue compressor — pulls simultaneous SFX into one cohesive
+      // sound instead of letting them sum chaotically. Fast attack catches
+      // transients; medium release lets the body breathe.
+      const sfxComp = this.ctx.createDynamicsCompressor();
+      sfxComp.threshold.value = -16;
+      sfxComp.knee.value = 8;
+      sfxComp.ratio.value = 4;
+      sfxComp.attack.value = 0.003;
+      sfxComp.release.value = 0.09;
+      sfx.connect(sfxComp).connect(masterLimiter);
       this.master = master;
       this.musicBus = music;
       this.sfxBus = sfx;
+      this.sfxCompressor = sfxComp;
+      this.masterLimiter = masterLimiter;
       this.unlocked = true;
       if (this.ctx.state === 'suspended') void this.ctx.resume();
+      // Warm small high-priority assets (menu loop + event stingers) so they
+      // play instantly when triggered. Theme tracks load lazily on first use.
+      this.assets.preloadDefaults();
     } catch (err) {
       console.warn('AudioEngine init failed', err);
     }

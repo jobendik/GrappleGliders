@@ -1,4 +1,5 @@
 import type { AudioEngine } from './AudioEngine';
+import type { AudioAssetKey } from './AudioAssets';
 
 interface BlipOpts {
   freq?: number;
@@ -14,19 +15,37 @@ interface LoopedSound {
   gain: GainNode;
 }
 
+/** Options for a one-shot file playback. */
+interface PlayOpts {
+  /** Output gain 0..1. Default 1. */
+  gain?: number;
+  /** ±factor randomized into playbackRate. 0.08 = ±8% pitch variance. */
+  pitchJitter?: number;
+  /** ±spread for random stereo pan, 0..1. UI sounds use 0 (centered). */
+  pan?: number;
+  /** Minimum ms between successive triggers of this key. */
+  throttleMs?: number;
+  /** Throttle tag override — share throttle across keys, or pass own. */
+  throttleTag?: string;
+  /** Fixed playback rate (overrides pitchJitter). 1.0 = native pitch. */
+  rate?: number;
+}
+
+/**
+ * Real-file sound effects player. Every method here plays a sample loaded
+ * by `AudioAssets`. Files are pre-warmed on audio unlock so the first
+ * trigger is instant; if a buffer isn't loaded yet the call no-ops cleanly
+ * and kicks off a background fetch for next time.
+ *
+ * Per-shot pitch jitter (playbackRate) and stereo pan jitter prevent
+ * repetition fatigue when the same sound fires rapidly — even though
+ * we're playing back the same recorded sample, each instance is subtly
+ * different.
+ */
 export class SFX {
   private lastTrigger: Record<string, number> = {};
-  private lavaLoop: LoopedSound | null = null;
-  private windLoop: LoopedSound | null = null;
-  /** Cached long noise buffer per AudioContext (avoid reallocating 3-second buffers). */
-  private cachedNoiseBuf = new WeakMap<AudioContext, AudioBuffer>();
-  private lavaRoar: {
-    src: AudioBufferSourceNode;
-    filter: BiquadFilterNode;
-    gain: GainNode;
-  } | null = null;
-  /** Cached noise buffer for lava roar / whooshes. Built lazily once. */
-  private noiseBuffer: AudioBuffer | null = null;
+  // Persistent looped sounds — one slot per looped key.
+  private loops = new Map<AudioAssetKey, LoopedSound>();
 
   constructor(private engine: AudioEngine) {}
 
@@ -37,1235 +56,338 @@ export class SFX {
     return true;
   }
 
-  // ── Noise helpers ──────────────────────────────────────────────
+  // ── Core playback helper ───────────────────────────────────────
 
-  /** Returns a cached 3-second noise buffer for looped sounds. */
-  private getNoiseBuf(ctx: AudioContext): AudioBuffer {
-    const cached = this.cachedNoiseBuf.get(ctx);
-    if (cached) return cached;
-    const sr = ctx.sampleRate;
-    const buf = ctx.createBuffer(1, sr * 3, sr);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    this.cachedNoiseBuf.set(ctx, buf);
-    return buf;
-  }
-
-  /** Create a short one-shot noise buffer. */
-  private shortNoise(ctx: AudioContext, duration: number): AudioBuffer {
-    const sr = ctx.sampleRate;
-    const len = Math.max(1, Math.floor(sr * duration));
-    const buf = ctx.createBuffer(1, len, sr);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-    return buf;
-  }
-
-  // ── General-purpose blip ───────────────────────────────────────
-
-  blip(tag: string, opts: BlipOpts = {}): void {
-    if (!this.canPlay(tag, 24)) return;
+  /**
+   * Play a pre-loaded sample once through the SFX bus. Routes through
+   * an optional StereoPanner for per-shot positional jitter and an
+   * optional playbackRate for pitch variation — together these keep
+   * repeated triggers from feeling robotic.
+   *
+   * If the buffer isn't loaded yet, kicks off a background fetch and
+   * returns silently. The next trigger should hit cached.
+   */
+  private play(key: AudioAssetKey, opts: PlayOpts = {}): void {
     const ctx = this.engine.ctx;
     const dest = this.engine.sfxDest;
     if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = opts.type ?? 'sine';
-    const f = opts.freq ?? 440;
-    const dur = opts.duration ?? 0.07;
-    const gain = opts.gain ?? 0.05;
-    osc.frequency.setValueAtTime(f, now);
-    if (opts.slide) {
-      osc.frequency.exponentialRampToValueAtTime(Math.max(30, f + opts.slide), now + dur);
+    const throttle = opts.throttleMs ?? 0;
+    if (throttle > 0) {
+      const tag = opts.throttleTag ?? key;
+      if (!this.canPlay(tag, throttle)) return;
     }
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(gain, now + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-    osc.connect(g).connect(dest);
-    osc.start(now);
-    osc.stop(now + dur + 0.02);
+    const buffer = this.engine.assets.get(key);
+    if (!buffer) {
+      void this.engine.assets.load(key);
+      return;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    if (opts.rate != null) {
+      src.playbackRate.value = opts.rate;
+    } else if (opts.pitchJitter && opts.pitchJitter > 0) {
+      const j = opts.pitchJitter;
+      src.playbackRate.value = 1 + (Math.random() * 2 - 1) * j;
+    }
+    const gain = ctx.createGain();
+    gain.gain.value = opts.gain ?? 1;
+    const pan = opts.pan ?? 0;
+    if (pan > 0) {
+      const panNode = ctx.createStereoPanner();
+      panNode.pan.value = (Math.random() * 2 - 1) * pan;
+      src.connect(gain).connect(panNode).connect(dest);
+    } else {
+      src.connect(gain).connect(dest);
+    }
+    src.start();
+  }
+
+  /**
+   * Update a looped ambient sound. Pass intensity 0..1 — the loop is
+   * started lazily on first non-zero call and gracefully stopped when
+   * intensity drops to (effectively) zero. Gain ramps smoothly so
+   * callers can spam this every frame without artifacts.
+   */
+  private setLoop(
+    key: AudioAssetKey,
+    intensity: number,
+    opts: { maxGain: number; smoothing?: number },
+  ): void {
+    const ctx = this.engine.ctx;
+    const dest = this.engine.sfxDest;
+    if (!ctx || !dest) return;
+    const target = Math.max(0, Math.min(1, intensity));
+    const existing = this.loops.get(key);
+    if (target <= 0.001) {
+      if (existing) {
+        existing.gain.gain.setTargetAtTime(0, ctx.currentTime, 0.15);
+        const stale = existing;
+        this.loops.delete(key);
+        setTimeout(() => {
+          try { stale.src.stop(); } catch { /* already stopped */ }
+          try { stale.src.disconnect(); } catch { /* already disconnected */ }
+        }, 350);
+      }
+      return;
+    }
+    if (!existing) {
+      const buffer = this.engine.assets.get(key);
+      if (!buffer) {
+        void this.engine.assets.load(key);
+        return;
+      }
+      const src = ctx.createBufferSource();
+      const gain = ctx.createGain();
+      src.buffer = buffer;
+      src.loop = true;
+      gain.gain.value = 0;
+      src.connect(gain).connect(dest);
+      src.start();
+      this.loops.set(key, { src, gain });
+    }
+    const loop = this.loops.get(key);
+    if (!loop) return;
+    const smoothing = opts.smoothing ?? 0.18;
+    loop.gain.gain.setTargetAtTime(target * opts.maxGain, ctx.currentTime, smoothing);
+  }
+
+  /** Stop a specific looped sound with a smooth fade. */
+  private stopLoop(key: AudioAssetKey): void {
+    this.setLoop(key, 0, { maxGain: 1 });
+  }
+
+  // ── Generic blip (parametric for legacy spark call) ────────────
+
+  /**
+   * Generic short SFX. Originally a procedural blip — now plays the
+   * `sfx:spark` sample. The `opts.gain` is honored; other procedural
+   * parameters (freq/duration/type/slide) are decorative no-ops kept
+   * for call-site compatibility.
+   */
+  blip(tag: string, opts: BlipOpts = {}): void {
+    this.play('sfx:spark', {
+      gain: opts.gain ?? 0.5,
+      pitchJitter: 0.12,
+      pan: 0.15,
+      throttleMs: 24,
+      throttleTag: tag,
+    });
   }
 
   // ── Core gameplay SFX ─────────────────────────────────────────
 
   hookFire(): void {
-    if (!this.canPlay('hookFire', 60)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Layer 1: sharp crack — short noise burst through a bandpass filter
-    {
-      const buf = this.shortNoise(ctx, 0.06);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'bandpass';
-      filter.frequency.value = 2800;
-      filter.Q.value = 0.8;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.18, now + 0.003);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.08);
-    }
-    // Layer 2: pitch whip — sawtooth sliding from high to low
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(1800, now);
-      osc.frequency.exponentialRampToValueAtTime(320, now + 0.07);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.07, now + 0.004);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
-      osc.connect(g).connect(dest);
-      osc.start(now);
-      osc.stop(now + 0.09);
-    }
+    this.play('sfx:hook-fire', { gain: 0.75, pitchJitter: 0.06, pan: 0.25, throttleMs: 60 });
   }
 
   hookConnect(distance: number): void {
-    if (!this.canPlay('hookConnect', 30)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const pitch = Math.max(0.6, Math.min(1.4, 1 - distance / 1500));
-    // Metallic noise impact
-    {
-      const buf = this.shortNoise(ctx, 0.05);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'bandpass';
-      filter.frequency.value = 1200 * pitch;
-      filter.Q.value = 2;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.1, now + 0.004);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.07);
-    }
-    // Ring tone
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(640 * pitch, now);
-      osc.frequency.exponentialRampToValueAtTime(480 * pitch, now + 0.09);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.055, now + 0.005);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
-      osc.connect(g).connect(dest);
-      osc.start(now);
-      osc.stop(now + 0.11);
-    }
+    // Pitch scales with distance — closer hits feel snappier, far hits deeper.
+    const t = Math.max(0, Math.min(1, 1 - distance / 1500));
+    this.play('sfx:hook-connect', {
+      gain: 0.85,
+      rate: 0.85 + t * 0.3 + (Math.random() - 0.5) * 0.04,
+      pan: 0.3,
+      throttleMs: 30,
+    });
   }
 
   hookRelease(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(360, now);
-    osc.frequency.exponentialRampToValueAtTime(120, now + 0.08);
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.045, now + 0.006);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-    osc.connect(g).connect(dest);
-    osc.start(now);
-    osc.stop(now + 0.1);
+    this.play('sfx:hook-release', { gain: 0.5, pitchJitter: 0.08, pan: 0.2 });
   }
 
   swingWhoosh(velocity: number): void {
-    if (!this.canPlay('whoosh', 110)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const sr = ctx.sampleRate;
-    const dur = 0.22;
-    const buf = ctx.createBuffer(1, Math.floor(sr * dur), sr);
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) {
-      data[i] = (Math.random() * 2 - 1) * (1 - i / data.length) * 0.5;
-    }
-    const src = ctx.createBufferSource();
-    const filter = ctx.createBiquadFilter();
-    const hp = ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(400 + velocity * 40, now);
-    filter.frequency.exponentialRampToValueAtTime(1200 + velocity * 60, now + 0.1);
-    filter.Q.value = 0.6;
-    hp.type = 'highpass';
-    hp.frequency.value = 300;
-    const g = ctx.createGain();
-    g.gain.value = Math.min(0.1, 0.02 + velocity * 0.003);
-    src.buffer = buf;
-    src.connect(filter).connect(hp).connect(g).connect(dest);
-    src.start(now);
+    // Volume + pitch both scale with swing speed.
+    const v = Math.max(0, Math.min(1, velocity / 40));
+    this.play('sfx:swing-whoosh', {
+      gain: 0.35 + v * 0.4,
+      rate: 0.9 + v * 0.35 + (Math.random() - 0.5) * 0.06,
+      pan: 0.5,
+      throttleMs: 110,
+    });
   }
 
   dash(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    if (!this.canPlay('dash', 80)) return;
-    const now = ctx.currentTime;
-    // Noise whoosh sweep
-    {
-      const buf = this.shortNoise(ctx, 0.18);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(600, now);
-      filter.frequency.exponentialRampToValueAtTime(2400, now + 0.1);
-      filter.Q.value = 0.5;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.12, now + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.2);
-    }
-    // Sub-bass thud
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(120, now);
-      osc.frequency.exponentialRampToValueAtTime(40, now + 0.12);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.09, now + 0.008);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
-      osc.connect(g).connect(dest);
-      osc.start(now);
-      osc.stop(now + 0.14);
-    }
+    this.play('sfx:dash', { gain: 0.85, pitchJitter: 0.08, pan: 0.35, throttleMs: 80 });
   }
 
   nearMiss(): void {
-    this.blip('nearMiss', { freq: 1400, duration: 0.055, type: 'sine', gain: 0.035, slide: 420 });
+    this.play('sfx:near-miss', { gain: 0.45, pitchJitter: 0.1, pan: 0.45, throttleMs: 120 });
   }
 
   combo(level: number): void {
-    if (!this.canPlay('combo', 70)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const base = 280 + level * 70;
-    [0, 0.045, 0.09].forEach((t, i) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = i === 2 ? 'triangle' : 'square';
-      o.frequency.setValueAtTime(base * (i + 1) * 0.68, now + t);
-      g.gain.setValueAtTime(0.0001, now + t);
-      g.gain.exponentialRampToValueAtTime(0.04 + level * 0.003, now + t + 0.012);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + t + 0.12);
-      o.connect(g).connect(dest);
-      o.start(now + t);
-      o.stop(now + t + 0.14);
+    // Higher combos play slightly higher-pitched for ascending excitement.
+    const t = Math.min(1, level / 8);
+    this.play('sfx:combo', {
+      gain: 0.55 + t * 0.25,
+      rate: 1.0 + t * 0.25 + (Math.random() - 0.5) * 0.05,
+      pan: 0.2,
+      throttleMs: 70,
     });
   }
 
   bounce(): void {
-    if (!this.canPlay('bounce', 40)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(380, now);
-    osc.frequency.exponentialRampToValueAtTime(700, now + 0.04);
-    osc.frequency.exponentialRampToValueAtTime(540, now + 0.08);
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.06, now + 0.006);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-    osc.connect(g).connect(dest);
-    osc.start(now);
-    osc.stop(now + 0.1);
+    this.play('sfx:bounce', { gain: 0.65, pitchJitter: 0.12, pan: 0.25, throttleMs: 40 });
   }
 
-  /**
-   * Death: layered descending sequence + low rumble + filtered noise crash.
-   * Punctuates the loss with weight rather than a thin blip sequence.
-   */
   death(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Descending tones with pitch slides for added weight.
-    [240, 190, 140, 95, 60].forEach((f, i) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = 'sawtooth';
-      o.frequency.setValueAtTime(f, now + i * 0.065);
-      o.frequency.exponentialRampToValueAtTime(Math.max(30, f * 0.5), now + i * 0.065 + 0.22);
-      g.gain.setValueAtTime(0.0001, now + i * 0.065);
-      g.gain.exponentialRampToValueAtTime(0.08, now + i * 0.065 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.065 + 0.22);
-      o.connect(g).connect(dest);
-      o.start(now + i * 0.065);
-      o.stop(now + i * 0.065 + 0.26);
-    });
-    // Sub-rumble underneath: 60→28Hz sine that drops with the descent — gives weight.
-    const rumble = ctx.createOscillator();
-    const rumbleG = ctx.createGain();
-    rumble.type = 'sine';
-    rumble.frequency.setValueAtTime(60, now);
-    rumble.frequency.exponentialRampToValueAtTime(28, now + 0.7);
-    rumbleG.gain.setValueAtTime(0.0001, now);
-    rumbleG.gain.exponentialRampToValueAtTime(0.12, now + 0.05);
-    rumbleG.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
-    rumble.connect(rumbleG).connect(dest);
-    rumble.start(now);
-    rumble.stop(now + 0.8);
-    // Filtered-noise crash at the head — the "impact" transient.
-    const noiseBuf = this.getNoiseBuffer();
-    if (noiseBuf) {
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = noiseBuf;
-      src.loop = false;
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(2200, now);
-      filter.frequency.exponentialRampToValueAtTime(220, now + 0.35);
-      g.gain.setValueAtTime(0.14, now);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.45);
-    }
+    this.play('sfx:death', { gain: 0.9, pitchJitter: 0.04 });
   }
 
-  /**
-   * Perfect anchor: distinctive 3-note ascending arpeggio with shimmer.
-   * Reads as "skill recognised" — separate from combo chime so the player
-   * learns the connection: precision → bell sound.
-   */
   perfectAnchor(): void {
-    if (!this.canPlay('perfectAnchor', 80)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // C5 → E5 → G5 arpeggio — clean major triad.
-    [523.25, 659.25, 783.99].forEach((f, i) => {
-      const o = ctx.createOscillator();
-      const o2 = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = 'triangle';
-      o2.type = 'sine';
-      o.frequency.setValueAtTime(f, now + i * 0.06);
-      o2.frequency.setValueAtTime(f * 2, now + i * 0.06);
-      g.gain.setValueAtTime(0.0001, now + i * 0.06);
-      g.gain.exponentialRampToValueAtTime(0.06, now + i * 0.06 + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.06 + 0.22);
-      o.connect(g).connect(dest);
-      o2.connect(g);
-      o.start(now + i * 0.06);
-      o2.start(now + i * 0.06);
-      o.stop(now + i * 0.06 + 0.24);
-      o2.stop(now + i * 0.06 + 0.24);
-    });
-    // Shimmer tail: short filtered-noise sheen that lingers.
-    const shimmerBuf = this.getNoiseBuffer();
-    if (shimmerBuf) {
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = shimmerBuf;
-      filter.type = 'highpass';
-      filter.frequency.value = 4000;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.04, now + 0.04);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.55);
-    }
+    this.play('sfx:perfect-anchor', { gain: 0.7, pitchJitter: 0.04, pan: 0.15, throttleMs: 80 });
   }
 
-  /**
-   * Level-up fanfare: 4-note rising sequence with octave doubling and bloom.
-   * Plays once on end-of-run when a level boundary is crossed.
-   */
   levelUp(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // C5 → E5 → G5 → C6 — triumphant resolution.
-    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
-      const o = ctx.createOscillator();
-      const o2 = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = 'triangle';
-      o2.type = 'sawtooth';
-      o.frequency.setValueAtTime(f, now + i * 0.09);
-      o2.frequency.setValueAtTime(f * 0.5, now + i * 0.09); // sub-octave
-      g.gain.setValueAtTime(0.0001, now + i * 0.09);
-      g.gain.exponentialRampToValueAtTime(0.08, now + i * 0.09 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.09 + 0.26);
-      o.connect(g).connect(dest);
-      o2.connect(g);
-      o.start(now + i * 0.09);
-      o2.start(now + i * 0.09);
-      o.stop(now + i * 0.09 + 0.28);
-      o2.stop(now + i * 0.09 + 0.28);
-    });
+    this.play('sfx:level-up', { gain: 0.85 });
   }
 
-  /**
-   * Generic unlock chime — used for pickups, achievements, theme unlocks.
-   * Kept for compatibility; level-up is now its own distinct fanfare.
-   */
+  /** Generic unlock chime — pickups, achievements, theme unlocks. */
   unlock(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = 'triangle';
-      o.frequency.setValueAtTime(f, now + i * 0.09);
-      g.gain.setValueAtTime(0.0001, now + i * 0.09);
-      g.gain.exponentialRampToValueAtTime(0.06, now + i * 0.09 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.09 + 0.18);
-      o.connect(g).connect(dest);
-      o.start(now + i * 0.09);
-      o.stop(now + i * 0.09 + 0.2);
-    });
+    this.play('sfx:unlock', { gain: 0.7 });
   }
 
-  /**
-   * Trick-detected stab: short, punchy 2-note flourish. Distinct from combo
-   * so trick callouts feel like their own thing.
-   */
   trick(intensity: number = 1): void {
-    if (!this.canPlay('trick', 90)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const base = 540 + intensity * 80;
-    // Quick falling 5th — playful.
-    [base * 1.5, base].forEach((f, i) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = 'square';
-      o.frequency.setValueAtTime(f, now + i * 0.05);
-      g.gain.setValueAtTime(0.0001, now + i * 0.05);
-      g.gain.exponentialRampToValueAtTime(0.05, now + i * 0.05 + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.05 + 0.13);
-      o.connect(g).connect(dest);
-      o.start(now + i * 0.05);
-      o.stop(now + i * 0.05 + 0.15);
+    const i = Math.max(0.5, Math.min(2, intensity));
+    this.play('sfx:trick', {
+      gain: 0.55,
+      rate: 0.95 + i * 0.05 + (Math.random() - 0.5) * 0.06,
+      pan: 0.3,
+      throttleMs: 90,
     });
   }
 
-  // ── NEW SFX ────────────────────────────────────────────────────
+  // ── Pickups & hazards ─────────────────────────────────────────
 
-  /** Metallic deflection hit — shield blocks damage. */
   shieldAbsorb(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Metallic noise clang
-    {
-      const buf = this.shortNoise(ctx, 0.06);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'bandpass';
-      filter.frequency.value = 2200;
-      filter.Q.value = 3;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.15, now + 0.003);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.06);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.08);
-    }
-    // Long metallic ring decay
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(440, now);
-      osc.frequency.setValueAtTime(380, now + 0.02);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.1, now + 0.005);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
-      osc.connect(g).connect(dest);
-      osc.start(now);
-      osc.stop(now + 0.47);
-    }
+    this.play('sfx:shield-absorb', { gain: 0.75, pitchJitter: 0.06, pan: 0.25 });
   }
 
-  /** Descending "whomp" — combo chain expired. */
   comboDrop(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Sub-bass pitch slide down
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(240, now);
-      osc.frequency.exponentialRampToValueAtTime(35, now + 0.28);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.12, now + 0.012);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
-      osc.connect(g).connect(dest);
-      osc.start(now);
-      osc.stop(now + 0.3);
-    }
-    // Low noise whomp
-    {
-      const buf = this.shortNoise(ctx, 0.22);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'lowpass';
-      filter.frequency.setValueAtTime(400, now);
-      filter.frequency.exponentialRampToValueAtTime(60, now + 0.22);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.08, now + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.24);
-    }
+    this.play('sfx:combo-drop', { gain: 0.7 });
   }
 
-  /** Subtle UI hover tick. */
-  buttonHover(): void {
-    if (!this.canPlay('btnHover', 60)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = 1600;
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.018, now + 0.004);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.025);
-    osc.connect(g).connect(dest);
-    osc.start(now);
-    osc.stop(now + 0.035);
-  }
-
-  /**
-   * Boss-wave alarm — descending klaxon pulse. Designed to read as "danger
-   * incoming." Plays once when a boss wave triggers.
-   */
-  bossAlert(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Two-tone alarm sweep: 880↔660 oscillating twice, then a low drop.
-    for (let i = 0; i < 4; i++) {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = 'sawtooth';
-      const f = i % 2 === 0 ? 880 : 660;
-      o.frequency.setValueAtTime(f, now + i * 0.13);
-      g.gain.setValueAtTime(0.0001, now + i * 0.13);
-      g.gain.exponentialRampToValueAtTime(0.09, now + i * 0.13 + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.13 + 0.12);
-      o.connect(g).connect(dest);
-      o.start(now + i * 0.13);
-      o.stop(now + i * 0.13 + 0.15);
-    }
-    // Closing bass drop for impact.
-    const drop = ctx.createOscillator();
-    const dropG = ctx.createGain();
-    drop.type = 'sine';
-    drop.frequency.setValueAtTime(160, now + 0.55);
-    drop.frequency.exponentialRampToValueAtTime(50, now + 0.95);
-    dropG.gain.setValueAtTime(0.0001, now + 0.55);
-    dropG.gain.exponentialRampToValueAtTime(0.16, now + 0.6);
-    dropG.gain.exponentialRampToValueAtTime(0.0001, now + 1.0);
-    drop.connect(dropG).connect(dest);
-    drop.start(now + 0.55);
-    drop.stop(now + 1.05);
-  }
-
-  /**
-   * Ambient lava roar — a continuous filtered-noise loop that fades in/out
-   * with lava proximity. Pass intensity 0..1 each frame. The loop is started
-   * lazily on first non-zero call and gain-modulated thereafter.
-   */
-  setLavaRoarIntensity(intensity: number): void {
-    const target = Math.max(0, Math.min(1, intensity));
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) {
-      // Audio not unlocked yet — wait until next call. No allocations.
-      return;
-    }
-    if (!this.lavaRoar && target > 0.01) {
-      this.lavaRoar = this.startLavaRoar(ctx, dest);
-    }
-    if (!this.lavaRoar) return;
-    const now = ctx.currentTime;
-    // Smoothly ramp to the requested intensity. Max gain ~0.18 — felt rather
-    // than heard so it doesn't mud the music.
-    const gainTarget = target * 0.18;
-    this.lavaRoar.gain.gain.cancelScheduledValues(now);
-    this.lavaRoar.gain.gain.setTargetAtTime(gainTarget, now, 0.18);
-    // Sharper filter when closer — adds heat brightness.
-    const cutoff = 400 + target * 1100;
-    this.lavaRoar.filter.frequency.setTargetAtTime(cutoff, now, 0.25);
-  }
-
-  /** Tear down the ambient lava loop. Call when leaving a lava mode. */
-  stopLavaRoar(): void {
-    if (!this.lavaRoar) return;
-    const ctx = this.engine.ctx;
-    if (!ctx) {
-      this.lavaRoar = null;
-      return;
-    }
-    const now = ctx.currentTime;
-    this.lavaRoar.gain.gain.cancelScheduledValues(now);
-    this.lavaRoar.gain.gain.setTargetAtTime(0, now, 0.15);
-    const src = this.lavaRoar.src;
-    this.lavaRoar = null;
-    setTimeout(() => {
-      try {
-        src.stop();
-      } catch {
-        /* already stopped */
-      }
-    }, 400);
-  }
-
-  private startLavaRoar(
-    ctx: AudioContext,
-    dest: AudioNode,
-  ): { src: AudioBufferSourceNode; filter: BiquadFilterNode; gain: GainNode } {
-    const buf = this.getNoiseBuffer();
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.loop = true;
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 500;
-    filter.Q.value = 1.4;
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-    // A second low-shelf to add a sub-band rumble for body.
-    const shelf = ctx.createBiquadFilter();
-    shelf.type = 'lowshelf';
-    shelf.frequency.value = 120;
-    shelf.gain.value = 9;
-    src.connect(filter).connect(shelf).connect(gain).connect(dest);
-    src.start();
-    return { src, filter, gain };
-  }
-
-  /**
-   * Return (and cache) a 2-second pink-ish noise buffer for use across SFX.
-   * Pink-ish: simple running-sum filter on white noise — cheap and warmer
-   * than raw white for "roar" / "crash" textures.
-   */
-  private getNoiseBuffer(): AudioBuffer | null {
-    if (this.noiseBuffer) return this.noiseBuffer;
-    const ctx = this.engine.ctx;
-    if (!ctx) return null;
-    const sr = ctx.sampleRate;
-    const dur = 2.0;
-    const buf = ctx.createBuffer(1, Math.floor(sr * dur), sr);
-    const data = buf.getChannelData(0);
-    // Voss-McCartney pink-noise approximation, lightweight.
-    let b0 = 0;
-    let b1 = 0;
-    let b2 = 0;
-    for (let i = 0; i < data.length; i++) {
-      const white = Math.random() * 2 - 1;
-      b0 = 0.99765 * b0 + white * 0.099046;
-      b1 = 0.963 * b1 + white * 0.2965164;
-      b2 = 0.57 * b2 + white * 1.0526913;
-      data[i] = (b0 + b1 + b2 + white * 0.1848) * 0.18;
-    }
-    this.noiseBuffer = buf;
-    return buf;
-  }
-  buttonClick(): void {
-    if (!this.canPlay('btn', 60)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(1100, now);
-    osc.frequency.exponentialRampToValueAtTime(500, now + 0.04);
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.04, now + 0.005);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
-    osc.connect(g).connect(dest);
-    osc.start(now);
-    osc.stop(now + 0.05);
-  }
-
-  /** Armour clank — shield pickup collected. */
   shieldPickup(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Metallic clang burst
-    {
-      const buf = this.shortNoise(ctx, 0.08);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'bandpass';
-      filter.frequency.value = 1800;
-      filter.Q.value = 2;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.12, now + 0.005);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.1);
-    }
-    // Body ring
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = 330;
-      g.gain.setValueAtTime(0.0001, now + 0.03);
-      g.gain.exponentialRampToValueAtTime(0.07, now + 0.04);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
-      osc.connect(g).connect(dest);
-      osc.start(now + 0.03);
-      osc.stop(now + 0.3);
-    }
+    this.play('sfx:shield-pickup', { gain: 0.7, pitchJitter: 0.05, pan: 0.2 });
   }
 
-  /** Electronic trill — magnet pickup collected. */
   magnetPickup(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    [440, 554, 659, 880, 1108].forEach((f, i) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.value = f;
-      const t = now + i * 0.04;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.04, t + 0.006);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.035);
-      osc.connect(g).connect(dest);
-      osc.start(t);
-      osc.stop(t + 0.05);
-    });
+    this.play('sfx:magnet-pickup', { gain: 0.55, pitchJitter: 0.08, pan: 0.2 });
   }
 
-  /** Dreamy pitch-bend glide down — slow-lava pickup collected. */
   slowPickup(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Main glide
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(900, now);
-      osc.frequency.exponentialRampToValueAtTime(180, now + 0.45);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.08, now + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
-      osc.connect(g).connect(dest);
-      osc.start(now);
-      osc.stop(now + 0.47);
-    }
-    // Upper harmonic glide
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(1800, now);
-      osc.frequency.exponentialRampToValueAtTime(360, now + 0.45);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.035, now + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.45);
-      osc.connect(g).connect(dest);
-      osc.start(now);
-      osc.stop(now + 0.47);
-    }
+    this.play('sfx:slow-pickup', { gain: 0.65, pan: 0.15 });
   }
 
-  /** Low rumble + crack — hook hits an unstable platform. */
   unstableTrigger(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Low rumble
-    {
-      const buf = this.shortNoise(ctx, 0.15);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'bandpass';
-      filter.frequency.value = 120;
-      filter.Q.value = 1.5;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.1, now + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.17);
-    }
-    // Crack transient
-    {
-      const buf = this.shortNoise(ctx, 0.04);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'highpass';
-      filter.frequency.value = 2000;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.07, now + 0.003);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.05);
-    }
+    this.play('sfx:unstable-trigger', { gain: 0.7, pitchJitter: 0.08, pan: 0.25 });
   }
 
-  /** Shatter/break sound — unstable platform crumbles away. */
   unstableCrumble(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Cascading noise sweep
-    {
-      const buf = this.shortNoise(ctx, 0.3);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(2000, now);
-      filter.frequency.exponentialRampToValueAtTime(200, now + 0.3);
-      filter.Q.value = 1;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.13, now + 0.008);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.32);
-    }
-    // Debris tones
-    [220, 160, 110].forEach((f, i) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sawtooth';
-      const t = now + i * 0.04;
-      osc.frequency.setValueAtTime(f, t);
-      osc.frequency.exponentialRampToValueAtTime(f * 0.4, t + 0.12);
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.04, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-      osc.connect(g).connect(dest);
-      osc.start(t);
-      osc.stop(t + 0.14);
-    });
+    this.play('sfx:unstable-crumble', { gain: 0.8, pitchJitter: 0.06, pan: 0.4 });
   }
 
-  /** Mechanical whirr — rope reeling in. */
-  ropeReelIn(): void {
-    if (!this.canPlay('reelIn', 80)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const buf = this.shortNoise(ctx, 0.1);
-    const src = ctx.createBufferSource();
-    const filter = ctx.createBiquadFilter();
-    const g = ctx.createGain();
-    src.buffer = buf;
-    filter.type = 'bandpass';
-    filter.frequency.value = 1600;
-    filter.Q.value = 4;
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.04, now + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
-    src.connect(filter).connect(g).connect(dest);
-    src.start(now);
-    src.stop(now + 0.12);
+  /**
+   * Set rope reel state — looped mechanical whirr that fades in/out as the
+   * player actively reels. Call every frame with the current direction:
+   *   'in'   — pulling the hook in (mouse held / reel-in input)
+   *   'out'  — paying rope out (reel-out input)
+   *   'none' — not reeling (hook detached, or attached but idle)
+   *
+   * Replaces the old one-shot ropeReelIn/Out methods which overlapped
+   * themselves on every frame and sounded like a stuttering loop.
+   */
+  setReelDirection(dir: 'in' | 'out' | 'none'): void {
+    this.setLoop('sfx:rope-reel-in', dir === 'in' ? 1 : 0, { maxGain: 0.4, smoothing: 0.08 });
+    this.setLoop('sfx:rope-reel-out', dir === 'out' ? 1 : 0, { maxGain: 0.35, smoothing: 0.1 });
   }
 
-  /** Slack creak — rope reeling out. */
-  ropeReelOut(): void {
-    if (!this.canPlay('reelOut', 120)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(280, now);
-    osc.frequency.linearRampToValueAtTime(240, now + 0.1);
-    osc.frequency.linearRampToValueAtTime(280, now + 0.15);
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.025, now + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
-    osc.connect(g).connect(dest);
-    osc.start(now);
-    osc.stop(now + 0.17);
+  // ── UI ────────────────────────────────────────────────────────
+
+  /** Tactile UI hover — slight pitch jitter so successive hovers vary. */
+  buttonHover(): void {
+    this.play('sfx:button-hover', { gain: 0.4, pitchJitter: 0.08, throttleMs: 60 });
   }
 
-  /** 2-note ascending fanfare — new personal best. */
+  buttonClick(): void {
+    this.play('sfx:button-click', { gain: 0.55, pitchJitter: 0.06, throttleMs: 60 });
+  }
+
+  // ── Race / event SFX ─────────────────────────────────────────
+
+  raceStartCountdown(): void {
+    this.play('sfx:race-start', { gain: 0.85 });
+  }
+
+  raceBotOvertake(): void {
+    this.play('sfx:race-bot-overtake', { gain: 0.65, throttleMs: 1500 });
+  }
+
+  finishLineCross(): void {
+    this.play('sfx:finish-line', { gain: 0.9 });
+  }
+
+  medalGold(): void {
+    this.play('sfx:medal-gold', { gain: 0.95 });
+  }
+
+  medalSilver(): void {
+    this.play('sfx:medal-silver', { gain: 0.85 });
+  }
+
+  medalBronze(): void {
+    this.play('sfx:medal-bronze', { gain: 0.75 });
+  }
+
   personalBest(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    [523.25, 783.99].forEach((f, i) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(f, now + i * 0.16);
-      g.gain.setValueAtTime(0.0001, now + i * 0.16);
-      g.gain.exponentialRampToValueAtTime(0.09, now + i * 0.16 + 0.015);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.16 + 0.3);
-      osc.connect(g).connect(dest);
-      osc.start(now + i * 0.16);
-      osc.stop(now + i * 0.16 + 0.32);
+    this.play('sfx:personal-best', { gain: 0.85 });
+  }
+
+  countdownTick(): void {
+    this.play('sfx:countdown-tick', {
+      gain: 0.7,
+      pitchJitter: 0.04,
+      throttleMs: 800,
     });
   }
 
-  // ── Looped ambient sounds ──────────────────────────────────────
+  /** One-shot tension layer — first frame of the final-10s countdown. */
+  lastChance(): void {
+    this.play('sfx:last-chance', { gain: 0.65 });
+  }
 
-  /**
-   * Update lava warning loop. `intensity` 0..1 — pass 0 to stop.
-   * Lazily starts a looped low-rumble noise; updates gain each call.
-   */
+  /** Boss-wave alarm — danger-incoming klaxon. */
+  bossAlert(): void {
+    this.play('sfx:boss-alert', { gain: 0.85 });
+  }
+
+  // ── Looped ambient ────────────────────────────────────────────
+
+  /** Update lava roar intensity 0..1. Started lazily, stopped when 0. */
+  setLavaRoarIntensity(intensity: number): void {
+    this.setLoop('sfx:lava-roar', intensity, { maxGain: 0.32, smoothing: 0.2 });
+  }
+
+  /** Update lava warning intensity 0..1. */
   lavaWarning(intensity: number): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest || intensity <= 0) {
-      this.stopLavaLoop();
-      return;
-    }
-    if (!this.lavaLoop) {
-      const buf = this.getNoiseBuf(ctx);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      src.loop = true;
-      filter.type = 'bandpass';
-      filter.frequency.value = 80;
-      filter.Q.value = 0.8;
-      g.gain.setValueAtTime(0.0001, ctx.currentTime);
-      src.connect(filter).connect(g).connect(dest);
-      src.start();
-      this.lavaLoop = { src, gain: g };
-    }
-    this.lavaLoop.gain.gain.setTargetAtTime(intensity * 0.065, ctx.currentTime, 0.1);
+    this.setLoop('sfx:lava-warning', intensity, { maxGain: 0.22, smoothing: 0.12 });
   }
 
-  private stopLavaLoop(): void {
-    if (!this.lavaLoop) return;
-    const ctx = this.engine.ctx;
-    const loop = this.lavaLoop;
-    this.lavaLoop = null;
-    if (ctx) loop.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.05);
-    setTimeout(() => {
-      try { loop.src.stop(); } catch { /* already stopped */ }
-      try { loop.src.disconnect(); } catch { /* already disconnected */ }
-    }, 200);
-  }
-
-  /**
-   * Update wind altitude loop. `gain` 0..1 — pass 0 to stop.
-   * High-pass filtered noise whose volume scales with altitude.
-   */
+  /** Update wind altitude gain 0..1. */
   windAltitude(gain: number): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest || gain <= 0) {
-      this.stopWindLoop();
-      return;
-    }
-    if (!this.windLoop) {
-      const buf = this.getNoiseBuf(ctx);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      src.loop = true;
-      filter.type = 'highpass';
-      filter.frequency.value = 1200;
-      filter.Q.value = 0.5;
-      g.gain.setValueAtTime(0.0001, ctx.currentTime);
-      src.connect(filter).connect(g).connect(dest);
-      src.start();
-      this.windLoop = { src, gain: g };
-    }
-    this.windLoop.gain.gain.setTargetAtTime(gain * 0.055, ctx.currentTime, 0.3);
+    this.setLoop('sfx:wind-altitude', gain, { maxGain: 0.25, smoothing: 0.3 });
   }
 
-  private stopWindLoop(): void {
-    if (!this.windLoop) return;
-    const ctx = this.engine.ctx;
-    const loop = this.windLoop;
-    this.windLoop = null;
-    if (ctx) loop.gain.gain.setTargetAtTime(0.0001, ctx.currentTime, 0.2);
-    setTimeout(() => {
-      try { loop.src.stop(); } catch { /* already stopped */ }
-      try { loop.src.disconnect(); } catch { /* already disconnected */ }
-    }, 500);
+  /** Tear down the lava roar loop — call when leaving a lava mode. */
+  stopLavaRoar(): void {
+    this.stopLoop('sfx:lava-roar');
   }
 
   /** Stop all looped ambient sounds — call when a run ends. */
   stopLooped(): void {
-    this.stopLavaLoop();
-    this.stopWindLoop();
-  }
-
-  // ── Race / competition SFX ─────────────────────────────────────
-
-  /** 3 beeps + GO! — played at the start of a bot race. */
-  raceStartCountdown(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Three countdown beeps
-    [0, 1, 2].forEach((i) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'square';
-      osc.frequency.value = 440;
-      const t = now + i;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.06, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
-      osc.connect(g).connect(dest);
-      osc.start(t);
-      osc.stop(t + 0.14);
-    });
-    // "GO!" — higher pitched, longer
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = 880;
-      const t = now + 3;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.1, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
-      osc.connect(g).connect(dest);
-      osc.start(t);
-      osc.stop(t + 0.37);
-    }
-  }
-
-  /** Minor chord tension sting — a bot overtakes the player. */
-  raceBotOvertake(): void {
-    if (!this.canPlay('botOvertake', 1500)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    [440, 523, 622].forEach((f, i) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sawtooth';
-      osc.frequency.value = f;
-      const t = now + i * 0.02;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.045, t + 0.01);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.2);
-      osc.connect(g).connect(dest);
-      osc.start(t);
-      osc.stop(t + 0.22);
-    });
-  }
-
-  /** Crowd cheer — player crosses the finish line. */
-  finishLineCross(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Rising noise burst (crowd)
-    {
-      const buf = this.shortNoise(ctx, 0.6);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'bandpass';
-      filter.frequency.setValueAtTime(800, now);
-      filter.frequency.exponentialRampToValueAtTime(2400, now + 0.3);
-      filter.Q.value = 0.5;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.12, now + 0.05);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.6);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.62);
-    }
-    // Rising fanfare notes
-    [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = f;
-      const t = now + i * 0.07;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.07, t + 0.015);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
-      osc.connect(g).connect(dest);
-      osc.start(t);
-      osc.stop(t + 0.27);
-    });
-  }
-
-  /** 3-note C-E-G fanfare — gold medal. */
-  medalGold(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    [523.25, 659.25, 783.99].forEach((f, i) => {
-      [1, 2].forEach((harm) => {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.value = f * harm;
-        const t = now + i * 0.14;
-        g.gain.setValueAtTime(0.0001, t);
-        g.gain.exponentialRampToValueAtTime(0.06 / harm, t + 0.015);
-        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.42);
-        osc.connect(g).connect(dest);
-        osc.start(t);
-        osc.stop(t + 0.44);
-      });
-    });
-  }
-
-  /** 2-note C-E fanfare — silver medal. */
-  medalSilver(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    [523.25, 659.25].forEach((f, i) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.value = f;
-      const t = now + i * 0.14;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.07, t + 0.015);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
-      osc.connect(g).connect(dest);
-      osc.start(t);
-      osc.stop(t + 0.37);
-    });
-  }
-
-  /** 1-note fanfare with resonant decay — bronze medal. */
-  medalBronze(): void {
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.value = 523.25;
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.exponentialRampToValueAtTime(0.08, now + 0.015);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
-    osc.connect(g).connect(dest);
-    osc.start(now);
-    osc.stop(now + 0.32);
-  }
-
-  /** Sharp clock tick — final seconds of ComboRun/TimeAttack. */
-  countdownTick(): void {
-    if (!this.canPlay('cntTick', 800)) return;
-    const ctx = this.engine.ctx;
-    const dest = this.engine.sfxDest;
-    if (!ctx || !dest) return;
-    const now = ctx.currentTime;
-    // Sharp transient
-    {
-      const buf = this.shortNoise(ctx, 0.018);
-      const src = ctx.createBufferSource();
-      const filter = ctx.createBiquadFilter();
-      const g = ctx.createGain();
-      src.buffer = buf;
-      filter.type = 'highpass';
-      filter.frequency.value = 3000;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.1, now + 0.002);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.018);
-      src.connect(filter).connect(g).connect(dest);
-      src.start(now);
-      src.stop(now + 0.02);
-    }
-    // Tone body
-    {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = 1200;
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(0.04, now + 0.003);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.05);
-      osc.connect(g).connect(dest);
-      osc.start(now);
-      osc.stop(now + 0.06);
-    }
+    this.stopLoop('sfx:lava-roar');
+    this.stopLoop('sfx:lava-warning');
+    this.stopLoop('sfx:wind-altitude');
+    this.stopLoop('sfx:rope-reel-in');
+    this.stopLoop('sfx:rope-reel-out');
   }
 }
-

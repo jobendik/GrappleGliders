@@ -1,4 +1,5 @@
 import type { AudioEngine } from './AudioEngine';
+import type { AudioAssetKey } from './AudioAssets';
 
 interface ThemeMusic {
   scale: number[]; // semitone offsets
@@ -17,11 +18,17 @@ const THEME_MUSIC: Record<string, ThemeMusic> = {
   'ice-station': { scale: [0, 2, 5, 7, 11], rootHz: 120, tempo: 102, pad: 'triangle', lead: 'sine' },
 };
 
-// Themes that should play the licensed soundtrack instead of procedural notes.
-// All themes route to it for now — it's the new house track and matches the
-// neon-synthwave palette. The procedural engine remains as a fallback for any
-// future theme that opts out by being missing from this set.
-const MP3_THEMES = new Set<string>(Object.keys(THEME_MUSIC));
+// Per-theme MP3 mapping. Every shipped theme now has a commissioned track;
+// the procedural generator below is kept as a fallback for any future theme
+// that ships before its track is generated.
+const THEME_MP3: Record<string, AudioAssetKey> = {
+  synthwave: 'music:synthwave',
+  vaporwave: 'music:vaporwave',
+  'cyber-noir': 'music:cyber-noir',
+  'blood-moon': 'music:blood-moon',
+  'ice-station': 'music:ice-station',
+  'neon-jungle': 'music:neon-jungle',
+};
 
 const noteToHz = (root: number, semis: number): number => root * Math.pow(2, semis / 12);
 
@@ -53,19 +60,40 @@ export class Music {
     bus.connect(this.engine.musicDest);
     this.bus = bus;
 
-    if (MP3_THEMES.has(themeId)) {
+    const assetKey = THEME_MP3[themeId];
+    if (assetKey) {
       // Try the MP3 first; fall back to procedural if the load fails.
-      void this.startMp3(themeId);
+      void this.startMp3(themeId, assetKey);
       return;
     }
     this.startProcedural(themeId);
   }
 
-  private async startMp3(themeId: string): Promise<void> {
-    const buffer = await this.engine.assets.load('music:above-the-steel');
+  /**
+   * Plays the menu/lobby loop. Separate from `play()` so the lobby can use
+   * its own ramp & doesn't have to share the THEME_MUSIC table.
+   */
+  playMenu(): void {
+    if (this.currentTheme === 'menu') return;
+    this.stop();
+    const ctx = this.engine.ctx;
+    if (!ctx || !this.engine.musicDest) return;
+    this.currentTheme = 'menu';
+    const bus = ctx.createGain();
+    bus.gain.value = 0;
+    bus.gain.linearRampToValueAtTime(0.35, ctx.currentTime + 1.2);
+    bus.connect(this.engine.musicDest);
+    this.bus = bus;
+    void this.startMp3('menu', 'music:menu');
+  }
+
+  private async startMp3(themeId: string, key: AudioAssetKey): Promise<void> {
+    const buffer = await this.engine.assets.load(key);
     // The user may have switched themes / stopped during the load.
     if (this.currentTheme !== themeId || !this.bus || !this.engine.ctx) return;
     if (!buffer) {
+      // Menu has no procedural fallback — just stay silent.
+      if (themeId === 'menu') return;
       this.startProcedural(themeId);
       return;
     }

@@ -208,6 +208,8 @@ export class Game {
   private crumbledIds = new Set<number>();
   /** Player race rank from the previous frame — used to detect bot overtake. */
   private prevPlayerRank = 1;
+  /** Last frame's rope length — used to detect actual reel motion (vs. holding at min/max). */
+  private prevRopeLength = 0;
   /** Last integer countdown second played — avoids retriggering every tick. */
   private lastCountdownSec = -1;
   /**
@@ -292,9 +294,9 @@ export class Game {
       this.audio.setVolume('sfx', this.save.data.settings.sfxVolume);
       this.audio.setEnabled('sfx', this.save.data.settings.sound);
       this.audio.setEnabled('music', this.save.data.settings.music);
-      // Warm up MP3 buffers in the background so the first music swap doesn't stall.
-      this.audio.assets.preload(['music:above-the-steel']);
-      if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
+      // Menu loop + small stingers preload automatically on audio unlock.
+      // Gameplay theme tracks load lazily on first run start (~2 MB fetch).
+      if (this.save.data.settings.music) this.music.playMenu();
     });
 
     // Auto-pause when the tab loses focus — avoids "I tabbed away and died".
@@ -465,9 +467,11 @@ export class Game {
         this.endRun('Time up');
         return;
       }
-      // Countdown tick in the final 10 seconds
+      // Countdown tick in the final 10 seconds — fire the one-shot tension
+      // layer on first entry, then a per-second tick from there.
       const secs = Math.ceil(this.modeTimer);
       if (secs <= 10 && secs > 0 && secs !== this.lastCountdownSec) {
+        if (this.lastCountdownSec === -1) this.sfx.lastChance();
         this.lastCountdownSec = secs;
         this.sfx.countdownTick();
       }
@@ -527,14 +531,20 @@ export class Game {
 
     this.player.update(dt, playerInput, this.world, this.killY);
 
-    // Rope reel SFX
+    // Rope reel SFX — only play while the rope length is *actually* changing.
+    // Holding the mouse with the rope clamped at minimum length should be
+    // silent (the player isn't really reeling, they're just hanging on).
+    let reelDir: 'in' | 'out' | 'none' = 'none';
     if (this.player.hook.state === 'attached') {
-      if (snap.pointerDown || snap.reel === -1) {
-        this.sfx.ropeReelIn();
-      } else if (snap.reel === 1) {
-        this.sfx.ropeReelOut();
-      }
+      const len = this.player.hook.ropeLength;
+      const delta = len - this.prevRopeLength;
+      if (delta < -0.05) reelDir = 'in';
+      else if (delta > 0.05) reelDir = 'out';
+      this.prevRopeLength = len;
+    } else {
+      this.prevRopeLength = 0;
     }
+    this.sfx.setReelDirection(reelDir);
 
     // Trick detection — runs *after* player.update so hook state transitions
     // for this frame are visible. The system never mutates anything; it
@@ -3187,8 +3197,9 @@ export class Game {
     // it with a course-specific theme during the run.
     if (this.themes.current.id !== this.save.data.equippedTheme) {
       this.themes.setTheme(this.save.data.equippedTheme);
-      if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
     }
+    // Back to the lobby — switch from gameplay loop to the menu/lobby track.
+    if (this.save.data.settings.music) this.music.playMenu();
     if (this.tutorial) {
       this.tutorial.destroy();
       this.tutorial = null;

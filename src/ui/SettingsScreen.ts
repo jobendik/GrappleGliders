@@ -126,7 +126,10 @@ export class SettingsScreen {
       musicToggle.textContent = next ? 'On' : 'Off';
       audio.setEnabled('music', next);
       if (!next) music.stop();
-      else music.play(save.data.equippedTheme);
+      // Re-enable from Settings most often happens on the menu — play the
+      // lobby loop. If a player toggles music mid-game during pause they'll
+      // hear lobby briefly; the gameplay loop resumes on next run start.
+      else music.playMenu();
       save.save();
     });
 
