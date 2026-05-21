@@ -857,6 +857,10 @@ export class Game {
       }
       // Personal best altitude line
       this.drawPersonalBestLine();
+      // Time Attack finish line — visible goal marker at the course summit.
+      if (this.mode === GameMode.TimeAttack) {
+        this.drawTimeAttackFinishLine();
+      }
       // Obstacles
       this.drawObstacles(this.world.obstacles, dt);
       // Trail
@@ -936,6 +940,71 @@ export class Game {
       this.camera.position.x - this.renderer.cssWidth / 2 + 16,
       y - 8,
     );
+    ctx.restore();
+  }
+
+  /**
+   * Draw the Time Attack finish line: a glowing horizontal bar at the
+   * course's target altitude tinted with the course accent. Includes a
+   * checker pattern and a "FINISH" label so the goal is visually obvious.
+   */
+  private drawTimeAttackFinishLine(): void {
+    if (!this.player) return;
+    const course = this.activeTimeAttackCourse;
+    const y = -course.targetAltitude * 10;
+    // Skip the draw entirely when the line is far off-screen — avoids a
+    // pointless gradient + dozens of fillRects every frame at low altitudes.
+    const camY = this.camera.position.y;
+    const halfHeight = this.renderer.cssHeight;
+    if (y < camY - halfHeight * 1.2 || y > camY + halfHeight * 1.2) return;
+    const ctx = this.renderer.ctx;
+    const accent = course.accent;
+    const cssWidth = this.renderer.cssWidth;
+    const camX = this.camera.position.x;
+    const left = camX - cssWidth;
+    const right = camX + cssWidth;
+    const pulse = 0.6 + Math.sin(this.framesSinceStart * 0.08) * 0.4;
+
+    ctx.save();
+    // Subtle glowing band behind the line
+    const bandGrad = ctx.createLinearGradient(0, y - 22, 0, y + 22);
+    bandGrad.addColorStop(0, withAlphaColor(accent, 0));
+    bandGrad.addColorStop(0.5, withAlphaColor(accent, 0.28 * pulse));
+    bandGrad.addColorStop(1, withAlphaColor(accent, 0));
+    ctx.fillStyle = bandGrad;
+    ctx.fillRect(left, y - 22, right - left, 44);
+
+    // Checker bar across the line — 24px squares alternating accent and white
+    const squareSize = 16;
+    const squareCount = Math.ceil((right - left) / squareSize) + 2;
+    const offset = Math.floor(left / squareSize) * squareSize;
+    for (let i = 0; i < squareCount; i++) {
+      const sx = offset + i * squareSize;
+      ctx.fillStyle = i % 2 === 0 ? accent : '#ffffff';
+      ctx.fillRect(sx, y - 4, squareSize, 8);
+    }
+
+    // Glowing rule
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1.5;
+    if (!this.lowQuality) {
+      ctx.shadowColor = accent;
+      ctx.shadowBlur = 14;
+    }
+    ctx.beginPath();
+    ctx.moveTo(left, y - 6);
+    ctx.lineTo(right, y - 6);
+    ctx.moveTo(left, y + 6);
+    ctx.lineTo(right, y + 6);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // FINISH label (player-facing, follows the camera horizontally so it's
+    // always readable)
+    ctx.fillStyle = accent;
+    ctx.font = '700 14px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`FINISH · ${course.name.toUpperCase()} · ${course.targetAltitude} M`, camX - cssWidth / 2 + 16, y - 14);
     ctx.restore();
   }
 
@@ -2076,8 +2145,15 @@ export class Game {
         break;
       }
       case GameMode.TimeAttack:
-        seed = 0xc0ffee;
+        // Per-course seed so the few procedural touches (spark phases, drone
+        // drift offsets) read distinctly across the four courses even though
+        // the obstacle layout is static.
+        seed = this.hashCourseSeed(this.activeTimeAttackCourse.id);
         staticLayout = buildCourseLayout(this.activeTimeAttackCourse);
+        // Apply the course's theme so each level has its own sky. Music is
+        // started later in startMode (after HUD setup). The equipped theme is
+        // restored in cleanupRun().
+        this.themes.setTheme(this.activeTimeAttackCourse.themeId);
         break;
       case GameMode.ComboRun:
         seed = (Math.random() * 0xffffffff) | 0;
@@ -2432,7 +2508,14 @@ export class Game {
     this.state = GameState.Playing;
     this.paused = false;
     this.crazy.gameplayStart();
-    if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
+    // Music should follow the active theme: Time Attack overrides with the
+    // course theme, every other mode uses the equipped theme.
+    if (this.save.data.settings.music) {
+      const musicTheme = mode === GameMode.TimeAttack
+        ? this.activeTimeAttackCourse.themeId
+        : this.save.data.equippedTheme;
+      this.music.play(musicTheme);
+    }
     // Begin capturing the canvas for the run-replay export. Safe to call on
     // unsupported browsers — it no-ops.
     this.recorder.start();
@@ -3084,10 +3167,26 @@ export class Game {
     this.bossBannerEl?.remove();
     this.bossBannerEl = null;
     this.bossRewardFrames = 0;
+    // Restore the player's equipped theme — Time Attack temporarily overrides
+    // it with a course-specific theme during the run.
+    if (this.themes.current.id !== this.save.data.equippedTheme) {
+      this.themes.setTheme(this.save.data.equippedTheme);
+      if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
+    }
     if (this.tutorial) {
       this.tutorial.destroy();
       this.tutorial = null;
     }
+  }
+
+  /** Deterministic but distinct seed per course id — tiny FNV-like hash. */
+  private hashCourseSeed(id: string): number {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < id.length; i++) {
+      h ^= id.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return (h ^ 0xc0ffee) >>> 0;
   }
 
   private ensureTouchControls(): void {
