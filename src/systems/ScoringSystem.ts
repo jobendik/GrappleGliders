@@ -26,6 +26,15 @@ export class ScoringSystem {
     this.bonusScore += Math.floor(points * this.combo);
   }
 
+  /**
+   * Add already-multiplied points (e.g. trick scores from TrickSystem, which
+   * baked the combo multiplier into the event score). Avoids double-counting
+   * the combo by skipping the inner `* this.combo`.
+   */
+  addRawBonus(points: number): void {
+    this.bonusScore += Math.floor(points);
+  }
+
   setCombo(combo: number): void {
     this.combo = combo;
     if (combo > this.peakCombo) this.peakCombo = combo;

@@ -19,6 +19,8 @@ export class Camera {
   viewportHeight = 1;
   smoothing = 0.085;
   lookAhead = 80;
+  /** Active zoom-decay timer so concurrent punchZoom calls don't race. */
+  private zoomDecayTimer: ReturnType<typeof setTimeout> | null = null;
 
   setViewport(w: number, h: number): void {
     this.viewportWidth = w;
@@ -63,8 +65,12 @@ export class Camera {
   /** Punch the camera zoom for a brief moment (decays back to 1). */
   punchZoom(amount: number, durationFrames: number): void {
     this.zoom = Math.max(this.zoom, 1 + amount);
-    // Auto-decay handled by zoom slowly returning to 1.
-    setTimeout(() => { this.zoom = 1; }, (durationFrames / 60) * 1000);
+    // Clear any in-flight decay so it doesn't cut short a fresh punch.
+    if (this.zoomDecayTimer) clearTimeout(this.zoomDecayTimer);
+    this.zoomDecayTimer = setTimeout(() => {
+      this.zoom = 1;
+      this.zoomDecayTimer = null;
+    }, (durationFrames / 60) * 1000);
   }
 
   shake(amount: number): void {
@@ -129,6 +135,10 @@ export class Camera {
     this.rollTarget = 0;
     this.zoom = 1;
     this.zoomCurrent = 1;
+    if (this.zoomDecayTimer) {
+      clearTimeout(this.zoomDecayTimer);
+      this.zoomDecayTimer = null;
+    }
     this.timeScale = 1;
     this.timeScaleTimer = 0;
   }
