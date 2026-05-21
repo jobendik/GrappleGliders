@@ -21,6 +21,32 @@ Strategiske alternativer for hva som bør bygges videre, rangert etter realistis
 
 ---
 
+## Status — polish-runden (pre-launch, mai 2026)
+
+Følgende ble levert i polish-runden før lansering. Bevisst utelukkelse: backend og multiplayer bygges ikke på dette stadiet.
+
+**Tier S — ferdig:**
+
+- **Replay-eksport til WebM** via `MediaRecorder` med rullende 30 s-cap. Web Share API på mobil, anker-nedlasting ellers. Stille no-op på nettlesere uten støtte. Se `src/systems/RunRecorder.ts`.
+- **Reelle lydeffekter:** distinkt perfect-anchor-chime, lagdelt death-sekvens med sub-rumble og noise-crash, level-up-fanfare, ambient lava roar med proximity-modulert gain, boss-klaxon, trick-stab. Alle prosedyrale — ingen nye lydfiler. Se `src/audio/SFX.ts`.
+- **Kosmetisk preview etter run:** «this run earned X toward Y» med fremdriftsbar som markerer dette run-ets bidrag i gull over baseline-cyan. Se `src/systems/UnlockSystem.ts` + `src/ui/GameOverScreen.ts`.
+- **Share-card-polering:** NEW PB-stjerne, trick-chip-rad, gradient-CTA, mode-aware bragging-tekst. Se `src/ui/ShareCard.ts` + `src/ui/ShareScreen.ts`.
+
+**Tier A — ferdig (delvis):**
+
+- **Trick-system:** fysikk-drevet deteksjon av Drop, Whip, Pendulum, Wall Run, Threading, Slingshot og Skim. Mid-run callout-banner, kombo-multiplisert score-bonus, end-of-run chip-oppsummering, integrasjon i share-card og share-tekst. Hver trick har egen scoreverdi og farge. Se `src/systems/TrickSystem.ts` + `src/ui/TrickCallout.ts`.
+- **2 nye temaer:** Lunar Drift (2200 Sparks) og Molten Core (2400 Sparks). Foreløpig kun visuelle — ingen mekaniske vridninger som lav gravitasjon eller reversert tyngdekraft. Se `src/content/themes.ts`.
+
+**Tier B — ferdig (delvis):**
+
+- **Boss waves i Endless:** hver 1000 m utløses en bølge der dødelig grus regner ned ovenfra, med klaxon, advarselsbanner og kortvarig lavabremse som belønning for overlevelse. Skjold absorberer ett treff. Se `triggerBossWave` / `updateBossDebris` i `src/game/Game.ts`.
+
+**Bundle:** 218 KB / 61 KB gzipped (+21 KB / +6 KB vs. baseline). Tester: 75/75 grønne (12 nye dekker trick-deteksjon og unlock-preview).
+
+**Det som bevisst gjenstår:** leaderboard-backend-deploy, async ghost MP, weekly tournament (alle krever backend); course editor (utsatt som valgfritt); ett biom med faktisk *mekanisk* vridning (de to nye er kun visuelle); story/campaign; sanntids-multiplayer; spectator/replay-studio. Resten av dokumentet under er fortsatt gyldig for prioritering av neste runde *etter* lanseringsdata.
+
+---
+
 ## Tre ærlige veier
 
 ### Vei 1 — Lanser og gå videre
@@ -62,12 +88,12 @@ Estimater antar den eksisterende kodebasen. Dager betyr kalenderdager for en erf
 
 Gjør disse *før* lansering hvis du har en dag til overs.
 
-| Feature                                                                                                         | Kostnad   | Effekt      | Hvorfor                                                                                                                                                                                    |
-| --------------------------------------------------------------------------------------------------------------- | --------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Deploy leaderboard-backenden. Cloudflare Worker-template finnes allerede.                                       | 2–4 timer | Høy         | Daily blir en *ekte* konkurranse i stedet for solo + bots. Infrastrukturen er allerede designet i `server/cloudflare-worker.ts`. Free tier er mer enn nok for lanseringstrafikk.           |
-| Replay-eksport til WebM / animert PNG                                                                           | 1–2 dager | Høy         | Den klart mest manglende virale hooken. Et swing-physics-spill *bør* ha delbare klipp, ikke bare skjermbilder. Nettlesere kan ta opp canvas via `MediaRecorder` API — ingen server trengs. |
-| Legg til 3–4 ekte lydeffekter, for eksempel death, perfect anchor og lava roar, i tillegg til whip + soundtrack | 1 dag     | Middels-høy | Lyd er den billigste kvalitetshevingen spillerne merker. Prosedyregenererte blips stopper ved «greit». Ekte samples kan føles «faktisk profesjonelt».                                      |
-| Kosmetisk preview etter run, for eksempel «this run earned 47 Sparks toward Blade Hook»                         | 4 timer   | Middels     | Driver unlock-bruk og retention. Akkurat nå er unlock-shoppen gjemt bak en knapp de fleste spillere aldri trykker på.                                                                      |
+| Feature                                                                                                         | Kostnad   | Effekt      | Status                  | Hvorfor                                                                                                                                                                                    |
+| --------------------------------------------------------------------------------------------------------------- | --------- | ----------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Deploy leaderboard-backenden. Cloudflare Worker-template finnes allerede.                                       | 2–4 timer | Høy         | **Gjenstår** (backend)  | Daily blir en *ekte* konkurranse i stedet for solo + bots. Infrastrukturen er allerede designet i `server/cloudflare-worker.ts`. Free tier er mer enn nok for lanseringstrafikk.           |
+| Replay-eksport til WebM / animert PNG                                                                           | 1–2 dager | Høy         | **Levert**              | Den klart mest manglende virale hooken. Et swing-physics-spill *bør* ha delbare klipp, ikke bare skjermbilder. Implementert via `MediaRecorder` på `canvas.captureStream()` — se `src/systems/RunRecorder.ts`. |
+| Legg til 3–4 ekte lydeffekter, for eksempel death, perfect anchor og lava roar, i tillegg til whip + soundtrack | 1 dag     | Middels-høy | **Levert**              | Lyd er den billigste kvalitetshevingen spillerne merker. Levert som prosedyrale, men lagdelt og distinkt: perfect-anchor-chime, death med sub-rumble + noise-crash, level-up-fanfare, ambient lava roar, boss-klaxon, trick-stab. Se `src/audio/SFX.ts`. |
+| Kosmetisk preview etter run, for eksempel «this run earned 47 Sparks toward Blade Hook»                         | 4 timer   | Middels     | **Levert**              | Driver unlock-bruk og retention. Levert som fremdriftsbar med dette run-ets bidrag fremhevet i gull over baseline-cyan. Se `nextCheapestUnlock()` i `src/systems/UnlockSystem.ts` og rendering i `src/ui/GameOverScreen.ts`. |
 
 ### Tier A — Reell oppside, moderat kostnad
 
@@ -75,11 +101,11 @@ Gjør disse *før* lansering hvis du har en dag til overs.
 
 | Feature                                                                                                                                                                                                                | Kostnad       | Effekt      | Hvorfor                                                                                                                                                                                                                                                        |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Trick system** — navngitte bevegelser som Drop, Pendulum, Slingshot og Wall-Ride, oppdaget fra fysikktilstand, med multiplikator-score og visning midt i run-et med delbare replay-tags                              | 2–3 uker      | Høy         | Løser problemet med at «alle skjermbilder ser like ut». Hvert run blir en *historie* med navngitte øyeblikk. Dette er den enkelt-featuren i denne tier-en jeg har størst tro på. Speiler det *Skate*, *Tony Hawk* og Riders Republic gjør for traversal-spill. |
-| **Async ghost multiplayer** — serverbasert ghost-matchmaking: dagens daily seed parer deg med et opptak fra noen innenfor ±10 % av ferdighetsnivået ditt. Du konkurrerer live mot replayet deres, ved siden av lavaen. | 1–2 uker      | Høy         | Løser social-pull-problemet uten sanntidsserverkostnad. Bare KV-lagring av ghost-replays + en «finn lignende score»-spørring. Utnytter eksisterende `personalBestGhost`-encoding.                                                                              |
-| **Course Editor + Share Code** — la spillere håndlage Time Attack-baner og dele dem via 8-tegns koder. Workshop er valgfritt; koder er nok.                                                                            | 2–3 uker      | Høy         | Brukergenerert innhold er den sterkeste retention-multiplikatoren på plattformer som CrazyGames. Banedataformatet er allerede enkelt, se `src/content/timeAttackCourses.ts`.                                                                                   |
-| Weekly tournament mode — samme seed hele uken, premier via Sparks / kosmetikk                                                                                                                                          | 1 uke         | Middels-høy | Et lag med høyere innsats over daily. Verdt å gjøre når daily-leaderboard-backenden er live.                                                                                                                                                                   |
-| 2–3 flere temaverdener med mekaniske vridninger, for eksempel lavgravitasjons-månebiom, reversert gravitasjon i invertert tårn, eller tåke-/siktbiom                                                                   | 1–2 uker hver | Middels     | Hvert biom er én ny *ting spillerne kan snakke om*. Langt mer virkningsfullt enn enda et skin.                                                                                                                                                                 |
+| **Trick system** — navngitte bevegelser som Drop, Pendulum, Slingshot og Wall-Ride, oppdaget fra fysikktilstand, med multiplikator-score og visning midt i run-et med delbare replay-tags                              | 2–3 uker      | Høy         | Løser problemet med at «alle skjermbilder ser like ut». Hvert run blir en *historie* med navngitte øyeblikk. Levert med 7 tricks: Drop, Whip, Pendulum, Wall Run, Threading, Slingshot, Skim — med mid-run-callout, score-bonus, end-of-run-oppsummering og share-card-integrasjon. Se `src/systems/TrickSystem.ts`. **STATUS: Levert.** |
+| **Async ghost multiplayer** — serverbasert ghost-matchmaking: dagens daily seed parer deg med et opptak fra noen innenfor ±10 % av ferdighetsnivået ditt. Du konkurrerer live mot replayet deres, ved siden av lavaen. | 1–2 uker      | Høy         | Løser social-pull-problemet uten sanntidsserverkostnad. Bare KV-lagring av ghost-replays + en «finn lignende score»-spørring. Utnytter eksisterende `personalBestGhost`-encoding. **STATUS: Gjenstår (backend ekskludert).**                                                                              |
+| **Course Editor + Share Code** — la spillere håndlage Time Attack-baner og dele dem via 8-tegns koder. Workshop er valgfritt; koder er nok.                                                                            | 2–3 uker      | Høy         | Brukergenerert innhold er den sterkeste retention-multiplikatoren på plattformer som CrazyGames. Banedataformatet er allerede enkelt, se `src/content/timeAttackCourses.ts`. **STATUS: Utsatt (valgfritt).**                                                                                   |
+| Weekly tournament mode — samme seed hele uken, premier via Sparks / kosmetikk                                                                                                                                          | 1 uke         | Middels-høy | Et lag med høyere innsats over daily. Verdt å gjøre når daily-leaderboard-backenden er live. **STATUS: Gjenstår (backend ekskludert).**                                                                                                                                                                   |
+| 2–3 flere temaverdener med mekaniske vridninger, for eksempel lavgravitasjons-månebiom, reversert gravitasjon i invertert tårn, eller tåke-/siktbiom                                                                   | 1–2 uker hver | Middels     | Hvert biom er én ny *ting spillerne kan snakke om*. Langt mer virkningsfullt enn enda et skin. **STATUS: Delvis levert.** 2 nye visuelle temaer (Lunar Drift, Molten Core) lagt til i `src/content/themes.ts`. *Mekaniske* vridninger (lavgrav, reversert gravitasjon) gjenstår — tema-systemet er kun visuelt i dag.                                                                                                                                                                 |
 
 ### Tier B — Stor forpliktelse, betinget oppside
 
@@ -87,10 +113,10 @@ Gjør disse *før* lansering hvis du har en dag til overs.
 
 | Feature                                                                                                                                                                                           | Kostnad     | Effekt                                                       | Hvorfor                                                                                                                                                        |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Sanntids-multiplayer-race**. Se egen seksjon under.                                                                                                                                             | 2–3 måneder | Svært høy *hvis* det fungerer, svært lav *hvis* det forlates | Den største «swing for the fences»-muligheten. Høyest kostnad. Høyest varians.                                                                                 |
-| **Story / Campaign mode** med 24–32 håndlagde nivåer, biome-progresjon og mini-boss-møter                                                                                                         | 8–12 uker   | Høy                                                          | Gjør spillet fra «score attack-leketøy» til «et *spill* jeg kan fullføre». En ekte hook for anmeldere. Men høy innholdskostnad — level design er flaskehalsen. |
-| **Spectator + replay studio** — ta opp runs, slow-motion, kameravinkler, eksport av 1080p-klipp                                                                                                   | 4–6 uker    | Høy *hvis* trick-systemet finnes                             | Trick system + replay studio sammen er det som gjorde *Trackmania* til en innholdsfabrikk. Uten tricks er replays bare runs.                                   |
-| **Boss waves** — hver 1000 meter i Endless jager en boss-obstacle deg i 30 sekunder, for eksempel laserdrone, målsøkende missil eller fallende vrakrester. Overlev for å presse lavaen ned igjen. | 2–3 uker    | Middels                                                      | Bryter monotonien i endless-loopen. Gir YouTubere/streamere et tydelig «øyeblikk».                                                                             |
+| **Sanntids-multiplayer-race**. Se egen seksjon under.                                                                                                                                             | 2–3 måneder | Svært høy *hvis* det fungerer, svært lav *hvis* det forlates | Den største «swing for the fences»-muligheten. Høyest kostnad. Høyest varians. **STATUS: Gjenstår (backend ekskludert).**                                                                                 |
+| **Story / Campaign mode** med 24–32 håndlagde nivåer, biome-progresjon og mini-boss-møter                                                                                                         | 8–12 uker   | Høy                                                          | Gjør spillet fra «score attack-leketøy» til «et *spill* jeg kan fullføre». En ekte hook for anmeldere. Men høy innholdskostnad — level design er flaskehalsen. **STATUS: Gjenstår (utsatt).** |
+| **Spectator + replay studio** — ta opp runs, slow-motion, kameravinkler, eksport av 1080p-klipp                                                                                                   | 4–6 uker    | Høy *hvis* trick-systemet finnes                             | Trick system + replay studio sammen er det som gjorde *Trackmania* til en innholdsfabrikk. Uten tricks er replays bare runs. **STATUS: Gjenstår.** Trick-system og replay-eksport finnes nå — et fullt replay-studio (slow-mo, kameravinkler, 1080p-eksport) er fortsatt neste steg om dataene rettferdiggjør det.                                   |
+| **Boss waves** — hver 1000 meter i Endless jager en boss-obstacle deg i 30 sekunder, for eksempel laserdrone, målsøkende missil eller fallende vrakrester. Overlev for å presse lavaen ned igjen. | 2–3 uker    | Middels                                                      | Bryter monotonien i endless-loopen. Gir YouTubere/streamere et tydelig «øyeblikk». **STATUS: Levert.** Hver 1000 m i Endless utløses en bølge med dødelig grus ovenfra, klaxon, advarselsbanner og kortvarig lavabremse som belønning. Se `triggerBossWave` i `src/game/Game.ts`.                                                                             |
 
 ### Tier C — Unngå
 
@@ -174,6 +200,8 @@ To spillere i samme tårn, med en mekanikk som krever samarbeid, for eksempel ro
 
 ## «Tricks»-ideen i detalj
 
+> **Levert i polish-runden.** Implementert i `src/systems/TrickSystem.ts`. Spesifikasjonen under er bevart som dokumentasjon av hva systemet gjør. Faktiske terskler (frame-vinduer, vinkelkrav, hastigheter) finnes i koden — denne tabellen beskriver intensjonen.
+
 Min Tier A-satsing med aller høyest overbevisning.
 
 Dette er verdt å utdype fordi jeg tror det er den mest oversette featuren for swing-physics-spill.
@@ -235,10 +263,12 @@ I grov rekkefølge etter ambisjonsnivå:
 
 ## Hva jeg faktisk ville gjort, i rekkefølge
 
-1. **Denne uken:** deploy leaderboard-backenden, legg til 3–4 ekte lydeffekter, poler share-card-teksten. Send til CrazyGames. Kostnad: 2–3 dager.
-2. **De neste 2–4 ukene:** *følg med på dataene*. Ikke bygg noe stort. Se på: D1-/D7-retensjon, gjennomsnittlig øktlengde, modusfordeling, share button click rate, daily leaderboard submission rate, mobil-versus-desktop-splitt og geografisk fordeling.
-3. **Hvis D7-retensjon er over 8 %, eller daily submissions trender oppover:** bygg trick-systemet, Tier A, cirka 2 uker. Følg med på data igjen to uker senere.
-4. **Hvis trick-systemet løfter retention videre:** bygg async ghost multiplayer, Tier A, cirka 1–2 uker. Følg med på data igjen.
+Oppdatert mai 2026 etter polish-runden. Steg 1 og 3 er allerede levert (uten leaderboard-backenden, som er bevisst utelatt). Den oppdaterte planen er:
+
+1. ~~**Denne uken:** deploy leaderboard-backenden, legg til 3–4 ekte lydeffekter, poler share-card-teksten. Send til CrazyGames.~~ *Lydeffekter og share-card-polering levert. Leaderboard-backend bevisst utelatt — daily-board er fortsatt local + cloud-save.*
+2. **Nå:** *send til CrazyGames og følg med på dataene*. Ikke bygg noe stort. Se på: D1-/D7-retensjon, gjennomsnittlig øktlengde, modusfordeling, share button click rate, **clip-eksport-rate** (ny KPI etter replay-export), daily leaderboard submission rate, mobil-versus-desktop-splitt og geografisk fordeling.
+3. ~~**Hvis D7-retensjon er over 8 %, eller daily submissions trender oppover:** bygg trick-systemet, Tier A, cirka 2 uker.~~ *Trick-systemet er levert allerede med 7 navngitte bevegelser. Følg med på trick-engasjement (callouts per run, share-tekst med trick-bragging) som signal på om det treffer.*
+4. **Hvis tricks + replay-export løfter retention og share-rate:** vurder leaderboard-backend-deploy + async ghost multiplayer (krever da å akseptere backend). Hvis du fortsatt ikke vil ha backend, vurder course editor med share-codes (lokal UGC, ingen server).
 5. **Først etter at steg 4 viser positivt signal:** forplikt deg til sanntids-multiplayer, cirka 3 måneder. Da er dette en investering rettferdiggjort av tre runder med akkumulerende data.
 6. **Hvis tallene flater ut på et hvilket som helst steg:** stopp. Lanseringen er fin. Gå videre til neste prosjekt. Spillet overlever i long-tail-form uansett.
 
@@ -276,6 +306,32 @@ Strategic options for what to build next, ranked by realistic impact-vs-cost. Wr
 | Cost to keep iterating | Open-ended. |
 
 **The strategic question is not "should I ship this." It is "having shipped this, do I keep building on it or move on?"** Those are separable decisions, and the second should be answered with *post-launch data*, not pre-launch hope.
+
+---
+
+## Status — pre-launch polish pass (May 2026)
+
+The following landed in the pre-launch polish pass. Deliberate exclusion: no backend or multiplayer was built at this stage.
+
+**Tier S — shipped:**
+
+- **Replay export to WebM** via `MediaRecorder` on `canvas.captureStream(30)` with a rolling 30s cap. Web Share API on mobile, anchor-download elsewhere. Silent no-op on browsers without support. See `src/systems/RunRecorder.ts`.
+- **Real sound effects:** distinct perfect-anchor chime, layered death sequence with sub-rumble + noise crash, level-up fanfare, ambient lava roar with proximity-modulated gain, boss klaxon, trick stab. All procedural — no new audio assets. See `src/audio/SFX.ts`.
+- **End-of-run cosmetic preview:** "this run earned X toward Y" with a progress bar highlighting the run contribution in gold over the baseline cyan. See `src/systems/UnlockSystem.ts` + `src/ui/GameOverScreen.ts`.
+- **Share-card polish:** NEW PB star badge, trick-chip row, gradient CTA, mode-aware bragging copy. See `src/ui/ShareCard.ts` + `src/ui/ShareScreen.ts`.
+
+**Tier A — partial:**
+
+- **Trick system:** physics-driven detection of Drop, Whip, Pendulum, Wall Run, Threading, Slingshot, Skim. Mid-run callout banner, combo-multiplied score bonus, end-of-run chip summary, share-card and share-text integration. Each trick has its own base score and chip color. See `src/systems/TrickSystem.ts` + `src/ui/TrickCallout.ts`.
+- **2 new themes:** Lunar Drift (2200 Sparks) and Molten Core (2400 Sparks). Currently visual-only — no mechanical twists (low-gravity, reversed gravity) yet. See `src/content/themes.ts`.
+
+**Tier B — partial:**
+
+- **Boss waves in Endless:** every 1000 m triggers a wave of lethal jagged debris raining from above, with klaxon, warning banner, and a brief lava-slow reward window for surviving. Shield absorbs one impact. See `triggerBossWave` / `updateBossDebris` in `src/game/Game.ts`.
+
+**Bundle:** 218 KB / 61 KB gzipped (+21 KB / +6 KB vs. baseline). Tests: 75/75 passing (12 new covering trick detection and the unlock-preview helper).
+
+**Deliberately not shipped:** leaderboard backend deploy, async ghost multiplayer, weekly tournaments (all require backend); course editor (deferred as optional); a biome with an actual *mechanical* twist (the two new ones are visual only); story / campaign; real-time multiplayer; spectator / replay studio. The rest of the document below remains valid for prioritising the next round *after* launch data.
 
 ---
 
@@ -317,29 +373,29 @@ Estimates assume the existing codebase. Days are calendar-days for an experience
 
 | Feature | Cost | Impact | Why |
 |---|---|---|---|
-| Deploy the leaderboard backend (Cloudflare Worker template already exists) | 2–4 hours | High | The daily becomes a *real* competition instead of solo + bots. The infrastructure is already designed in `server/cloudflare-worker.ts`. Free tier is plenty for launch traffic. |
-| Replay export to WebM / animated PNG | 1–2 days | High | The single most-missing viral hook. A swing-physics game *should* have shareable clips, not just screenshots. Browsers can record canvas via `MediaRecorder` API — no server needed. |
-| Add 3–4 real sound effects (death, perfect anchor, lava roar) on top of the whip + soundtrack | 1 day | Medium-high | Audio is the cheapest perceived-quality lift. Procedural blips ceiling at "okay." Real samples ceiling at "actually feels professional." |
-| End-of-run cosmetic preview ("this run earned 47 Sparks toward Blade Hook") | 4 hours | Medium | Drives unlock spend and retention. Currently the unlock shop is hidden behind a button most players never tap. |
+| Deploy the leaderboard backend (Cloudflare Worker template already exists) | 2–4 hours | High | The daily becomes a *real* competition instead of solo + bots. The infrastructure is already designed in `server/cloudflare-worker.ts`. Free tier is plenty for launch traffic. **STATUS: Pending (backend excluded).** |
+| Replay export to WebM / animated PNG | 1–2 days | High | The single most-missing viral hook. A swing-physics game *should* have shareable clips, not just screenshots. Implemented via `MediaRecorder` on `canvas.captureStream()` — see `src/systems/RunRecorder.ts`. **STATUS: Shipped.** |
+| Add 3–4 real sound effects (death, perfect anchor, lava roar) on top of the whip + soundtrack | 1 day | Medium-high | Audio is the cheapest perceived-quality lift. Shipped as procedural but layered and distinct: perfect-anchor chime, death + sub-rumble + noise crash, level-up fanfare, ambient lava roar, boss klaxon, trick stab. See `src/audio/SFX.ts`. **STATUS: Shipped.** |
+| End-of-run cosmetic preview ("this run earned 47 Sparks toward Blade Hook") | 4 hours | Medium | Drives unlock spend and retention. Shipped as a progress bar with the run's contribution highlighted in gold over the baseline cyan. See `nextCheapestUnlock()` in `src/systems/UnlockSystem.ts`. **STATUS: Shipped.** |
 
 ### Tier A — Real upside, modest cost (1–3 weeks each)
 
 | Feature | Cost | Impact | Why |
 |---|---|---|---|
-| **Trick system** — named moves (Drop, Pendulum, Slingshot, Wall-Ride) detected from physics state, multiplier scores, displayed mid-run with shareable replay tags | 2–3 weeks | High | Solves the "screenshots all look the same" problem. Each run becomes a *story* with named moments. This is the highest-conviction single feature in this tier. Mirrors what *Skate*, *Tony Hawk*, and Riders Republic do for traversal games. |
-| **Async ghost multiplayer** — server-side ghost matchmaking: today's daily seed pairs you with a recorded run from someone within ±10% of your skill. Race against their replay live, alongside the lava | 1–2 weeks | High | Solves the social-pull problem with no real-time server cost. Just KV storage of ghost replays + a "find similar score" query. Leverages existing `personalBestGhost` encoding. |
-| **Course Editor + Share Code** — let players hand-craft Time Attack courses and share via 8-character codes. Workshop is optional; codes are enough | 2–3 weeks | High | UGC is the single most powerful retention multiplier on platforms like CrazyGames. The course-data format is already simple (see `src/content/timeAttackCourses.ts`). |
-| Weekly tournament mode — same seed for the whole week, prizes via Sparks / cosmetic | 1 week | Medium-high | A higher-stakes layer above the daily. Worth doing once the daily leaderboard backend is live. |
-| 2–3 more themed worlds with mechanical twists (low-gravity moon biome, reversed-gravity inverted tower, fog/visibility biome) | 1–2 weeks each | Medium | Each biome is one new *thing players talk about*. Far more impactful than another skin. |
+| **Trick system** — named moves (Drop, Pendulum, Slingshot, Wall-Ride) detected from physics state, multiplier scores, displayed mid-run with shareable replay tags | 2–3 weeks | High | Solves the "screenshots all look the same" problem. Shipped with 7 tricks: Drop, Whip, Pendulum, Wall Run, Threading, Slingshot, Skim — mid-run callout, score bonus, end-of-run summary, share-card integration. See `src/systems/TrickSystem.ts`. **STATUS: Shipped.** |
+| **Async ghost multiplayer** — server-side ghost matchmaking: today's daily seed pairs you with a recorded run from someone within ±10% of your skill. Race against their replay live, alongside the lava | 1–2 weeks | High | Solves the social-pull problem with no real-time server cost. Just KV storage of ghost replays + a "find similar score" query. Leverages existing `personalBestGhost` encoding. **STATUS: Pending (backend excluded).** |
+| **Course Editor + Share Code** — let players hand-craft Time Attack courses and share via 8-character codes. Workshop is optional; codes are enough | 2–3 weeks | High | UGC is the single most powerful retention multiplier on platforms like CrazyGames. The course-data format is already simple (see `src/content/timeAttackCourses.ts`). **STATUS: Deferred (optional).** |
+| Weekly tournament mode — same seed for the whole week, prizes via Sparks / cosmetic | 1 week | Medium-high | A higher-stakes layer above the daily. Worth doing once the daily leaderboard backend is live. **STATUS: Pending (backend excluded).** |
+| 2–3 more themed worlds with mechanical twists (low-gravity moon biome, reversed-gravity inverted tower, fog/visibility biome) | 1–2 weeks each | Medium | Each biome is one new *thing players talk about*. **STATUS: Partial.** Two new visual themes added (Lunar Drift, Molten Core) in `src/content/themes.ts`. Mechanical twists (low-grav, reversed gravity) still pending — the theme system is purely visual today and would need a `worldModifier` extension. |
 
 ### Tier B — Substantial commitment, conditional upside (1–3 months each)
 
 | Feature | Cost | Impact | Why |
 |---|---|---|---|
-| **Real-time multiplayer race** (see dedicated section below) | 2–3 months | Very high *if* it works, very low *if* abandoned | Single biggest swing-for-the-fences. Highest cost. Highest variance. |
-| **Story / Campaign mode** with 24–32 hand-crafted levels, biome progression, mini-boss encounters | 8–12 weeks | High | Turns the game from "score attack toy" into "a *game* I can finish." A real reviewer hook. But high content cost — level design is the long pole. |
-| **Spectator + replay studio** — record runs, slow-mo, camera angles, export 1080p clips | 4–6 weeks | High *if* the trick system exists | Trick system + replay studio together is what made *Trackmania* a content factory. Without tricks, replays are just runs. |
-| **Boss waves** — every 1000m in Endless, a boss obstacle pursues you for 30s (laser drone, homing missile, falling debris). Survive to break the lava back down | 2–3 weeks | Medium | Breaks the monotony of the endless loop. Gives YouTubers/streamers a "moment." |
+| **Real-time multiplayer race** (see dedicated section below) | 2–3 months | Very high *if* it works, very low *if* abandoned | Single biggest swing-for-the-fences. Highest cost. Highest variance. **STATUS: Pending (backend excluded).** |
+| **Story / Campaign mode** with 24–32 hand-crafted levels, biome progression, mini-boss encounters | 8–12 weeks | High | Turns the game from "score attack toy" into "a *game* I can finish." A real reviewer hook. But high content cost — level design is the long pole. **STATUS: Pending (deferred).** |
+| **Spectator + replay studio** — record runs, slow-mo, camera angles, export 1080p clips | 4–6 weeks | High *if* the trick system exists | Trick system + replay studio together is what made *Trackmania* a content factory. **STATUS: Pending.** Trick system and basic replay export both exist now — a full studio (slow-mo, camera angles, 1080p export) is the next step if data justifies it. |
+| **Boss waves** — every 1000m in Endless, a boss obstacle pursues you for 30s (laser drone, homing missile, falling debris). Survive to break the lava back down | 2–3 weeks | Medium | Breaks the monotony of the endless loop. Gives YouTubers/streamers a "moment." **STATUS: Shipped.** Every 1000 m in Endless spawns lethal jagged debris from above with klaxon, warning banner, and brief lava-slow reward. See `triggerBossWave` in `src/game/Game.ts`. |
 
 ### Tier C — Avoid (or do only if specifically excited)
 
@@ -413,6 +469,8 @@ But: if the game *isn't* good enough yet to justify it, multiplayer doesn't save
 
 ## The "tricks" idea in detail (my single highest-conviction Tier-A bet)
 
+> **Shipped in the polish pass.** Implemented in `src/systems/TrickSystem.ts`. The spec below is kept as documentation of what the system does. Actual thresholds (frame windows, arc angles, speeds) live in the code — this table describes intent.
+
 Worth elaborating because I think this is the most-overlooked feature for swing-physics games.
 
 The grappling-hook *moment* is invisible in screenshots. Players doing impressive things look identical to players doing boring things, because there's no UI affordance for *what* they just did.
@@ -471,10 +529,12 @@ In rough order of ambition:
 
 ## What I'd actually do, in order
 
-1. **This week:** deploy the leaderboard backend, add 3–4 real sound effects, polish the share-card text. Submit to CrazyGames. Cost: 2–3 days.
-2. **Next 2–4 weeks:** *watch the data*. Don't build anything major. Look at: D1/D7 retention, average session length, mode distribution, share-button click rate, daily-leaderboard submission rate, mobile-vs-desktop split, geographic distribution.
-3. **If D7 retention > 8% or daily submissions trend upward**: build the trick system (Tier A, ~2 weeks). Re-watch data 2 weeks later.
-4. **If trick system bumps retention further**: build async ghost multiplayer (Tier A, ~1–2 weeks). Re-watch data.
+Updated May 2026 after the polish pass. Steps 1 and 3 already shipped (without the leaderboard backend, which is deliberately excluded). The updated plan:
+
+1. ~~**This week:** deploy the leaderboard backend, add 3–4 real sound effects, polish the share-card text. Submit to CrazyGames.~~ *SFX and share-card polish shipped. Leaderboard backend deliberately excluded — the daily board is still local + cloud-save.*
+2. **Now:** *submit to CrazyGames and watch the data*. Don't build anything major. Look at: D1/D7 retention, average session length, mode distribution, share-button click rate, **clip-export rate** (new KPI after the replay export), daily-leaderboard submission rate, mobile-vs-desktop split, geographic distribution.
+3. ~~**If D7 retention > 8% or daily submissions trend upward**: build the trick system (Tier A, ~2 weeks).~~ *Trick system already shipped with 7 named moves. Watch trick engagement (callouts per run, trick-bragging in share text) as the signal that it lands.*
+4. **If tricks + replay export lift retention and share rate**: consider deploying the leaderboard backend + async ghost multiplayer (requires accepting backend at that point). If you still don't want backend, consider the course editor with share codes (local UGC, no server).
 5. **Only after step 4 shows positive signal**: commit to real-time multiplayer (3 months). This is now an investment justified by three rounds of compounding data.
 6. **If at any step the numbers flatten**: stop. Ship is fine. Move to next project. The game survives in long-tail form regardless.
 
