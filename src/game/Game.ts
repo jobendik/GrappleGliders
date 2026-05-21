@@ -201,6 +201,20 @@ export class Game {
   private fireballs: { x: number; y: number; vx: number; vy: number; ttl: number; r: number }[] = [];
   /** Frames until next fireball spawn attempt. */
   private fireballCooldown = 120;
+  /**
+   * Boss-wave debris: lethal falling obstacles spawned every 1000m in Endless.
+   * Tracks own physics + collision separately from World.obstacles so the
+   * spawn logic stays out of the deterministic seed.
+   */
+  private bossDebris: { x: number; y: number; vx: number; vy: number; r: number; ttl: number; rot: number; spin: number }[] = [];
+  /** Next altitude milestone (m) at which a boss wave triggers. 0 = disabled. */
+  private nextBossWaveAltitude = 0;
+  /** Endless-only flag: whether boss waves should be active. */
+  private bossWaveEnabled = false;
+  /** Banner element for the boss-wave warning. */
+  private bossBannerEl: HTMLDivElement | null = null;
+  /** Frames remaining for the current boss-wave reward window (slows the lava). */
+  private bossRewardFrames = 0;
 
   constructor(opts: {
     canvas: HTMLCanvasElement;
@@ -642,6 +656,23 @@ export class Game {
       else this.nextMilestone += 500;
     }
 
+    // Boss waves: every 1000m in Endless. Lava also slows during the reward window.
+    if (
+      this.bossWaveEnabled &&
+      this.nextBossWaveAltitude > 0 &&
+      this.player.maxAltitude >= this.nextBossWaveAltitude
+    ) {
+      this.triggerBossWave(this.nextBossWaveAltitude);
+      this.nextBossWaveAltitude += 1000;
+    }
+    // Active boss debris: integrate physics, check player collision.
+    if (this.bossDebris.length > 0) this.updateBossDebris(dt);
+    // Reward window: temporarily slow the lava after a survived wave.
+    if (this.bossRewardFrames > 0) {
+      this.bossRewardFrames -= dt;
+      this.killY += this.lavaSpeed * 0.55 * dt; // negate ~55% of upward drift this frame
+    }
+
     // Tutorial altitude notify (final step gates on this).
     this.tutorial?.notify('altitude', { altitude: this.player.maxAltitude });
 
@@ -796,6 +827,8 @@ export class Game {
         this.framesSinceStart,
         this.lowQuality,
       );
+      // Boss debris (rendered before particles so embers overlay it).
+      this.drawBossDebris();
       // Particles
       this.particles.draw(this.renderer.ctx, this.lowQuality);
       // Floating texts
@@ -2256,6 +2289,13 @@ export class Game {
     this.slowLavaFrames = 0;
     this.fireballs.length = 0;
     this.fireballCooldown = 240;
+    this.bossDebris.length = 0;
+    this.bossBannerEl?.remove();
+    this.bossBannerEl = null;
+    this.bossRewardFrames = 0;
+    // Boss waves only fire in Endless climb. First wave hits at 1000m.
+    this.bossWaveEnabled = mode === GameMode.EndlessClimb;
+    this.nextBossWaveAltitude = this.bossWaveEnabled ? 1000 : 0;
     this.ghostRecording = [];
     this.ghostPlayback =
       mode === GameMode.EndlessClimb || mode === GameMode.DailyChallenge
@@ -2568,6 +2608,164 @@ export class Game {
     });
   }
 
+  /**
+   * Trigger a boss wave at the given altitude milestone. Spawns lethal debris
+   * raining from above the player, plays alarm SFX, flashes the screen, and
+   * shows a brief warning banner.
+   */
+  private triggerBossWave(altitude: number): void {
+    if (!this.player) return;
+    this.sfx.bossAlert();
+    this.camera.flash(0.42);
+    this.camera.shake(14);
+    this.screen.pulseBloom(0.6);
+    this.screen.setComboTint('#ff255e', 0.7);
+    this.haptics.trigger('death');
+    this.showBossBanner(altitude);
+    // Spawn 6–8 debris, randomly distributed across the player's view width,
+    // 600–900px above current position. Each falls with gravity + slight horizontal drift.
+    const count = 6 + Math.floor(Math.random() * 3);
+    const w = this.renderer.cssWidth;
+    for (let i = 0; i < count; i++) {
+      const x = this.player.pos.x - w * 0.5 + (i + Math.random() * 0.6) * (w / count);
+      const y = this.player.pos.y - 700 - Math.random() * 240;
+      const vx = (Math.random() - 0.5) * 1.2;
+      const vy = 1.4 + Math.random() * 1.6;
+      const r = 18 + Math.random() * 10;
+      const spin = (Math.random() - 0.5) * 0.18;
+      this.bossDebris.push({ x, y, vx, vy, r, ttl: 360, rot: Math.random() * Math.PI * 2, spin });
+    }
+    // Generate a screen-wide warning shockwave so the player can read the spawn area.
+    this.particles.shockwave(this.player.pos.x, this.player.pos.y - 200, '#ff255e', {
+      size: 80,
+      life: 0.9,
+      thickness: 4,
+    });
+    // Schedule the lava-slow reward — 6 seconds of partial recovery starts now.
+    this.bossRewardFrames = 360;
+  }
+
+  /**
+   * Per-frame boss debris update: gravity, collision with player, expiry.
+   * Lethal on impact (or shield-absorbed if active).
+   */
+  private updateBossDebris(dt: number): void {
+    if (!this.player) {
+      this.bossDebris.length = 0;
+      return;
+    }
+    const player = this.player;
+    for (let i = this.bossDebris.length - 1; i >= 0; i--) {
+      const d = this.bossDebris[i]!;
+      // Slight tracking — gently nudge vx toward the player's x while in flight.
+      const dx = player.pos.x - d.x;
+      d.vx += Math.sign(dx) * 0.012 * dt;
+      d.vy += 0.18 * dt; // gravity
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.rot += d.spin * dt;
+      d.ttl -= dt;
+      // Trailing embers
+      if (Math.random() < 0.55) {
+        this.particles.ember(d.x, d.y, Math.random() < 0.5 ? '#ff255e' : '#ffd400');
+      }
+      // Collision with player (circle vs circle approximation).
+      const cdx = player.pos.x - d.x;
+      const cdy = player.pos.y - d.y;
+      const sumR = player.radius + d.r * 0.6;
+      if (cdx * cdx + cdy * cdy < sumR * sumR && player.invuln <= 0 && !player.dead) {
+        // Burst on impact regardless of outcome.
+        this.particles.shockwave(d.x, d.y, '#ff255e', { size: 28, life: 0.55, thickness: 4 });
+        this.particles.burst(d.x, d.y, 20, '#ff255e', { speed: 1.2, life: 0.8 });
+        this.bossDebris.splice(i, 1);
+        if (player.shield > 0) {
+          player.shield -= 1;
+          player.invuln = 36;
+          player.vel.y = -8;
+          this.camera.shake(10);
+          this.screen.pulseBloom(0.4);
+        } else {
+          player.die('Crushed by debris');
+          return;
+        }
+        continue;
+      }
+      // Cull far below or expired.
+      if (d.ttl <= 0 || d.y > this.killY + 200 || d.y > player.pos.y + this.renderer.cssHeight * 1.2) {
+        this.bossDebris.splice(i, 1);
+      }
+    }
+  }
+
+  /** Render boss debris with player-camera transform applied. */
+  private drawBossDebris(): void {
+    if (this.bossDebris.length === 0) return;
+    const ctx = this.renderer.ctx;
+    ctx.save();
+    for (const d of this.bossDebris) {
+      // Outer warning halo
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const halo = ctx.createRadialGradient(d.x, d.y, 0, d.x, d.y, d.r * 2.4);
+      halo.addColorStop(0, 'rgba(255,37,94,0.55)');
+      halo.addColorStop(0.5, 'rgba(255,210,0,0.25)');
+      halo.addColorStop(1, 'rgba(255,37,94,0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r * 2.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      // Spinning jagged shard body
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.rot);
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, d.r);
+      grad.addColorStop(0, '#ffd200');
+      grad.addColorStop(0.5, '#ff6a00');
+      grad.addColorStop(1, '#ff255e');
+      ctx.fillStyle = grad;
+      ctx.shadowColor = '#ff255e';
+      ctx.shadowBlur = 22;
+      ctx.beginPath();
+      // Star-like silhouette: alternate inner/outer radius around 8 points.
+      const points = 7;
+      for (let p = 0; p < points * 2; p++) {
+        const a = (p / (points * 2)) * Math.PI * 2;
+        const rad = p % 2 === 0 ? d.r : d.r * 0.55;
+        const x = Math.cos(a) * rad;
+        const y = Math.sin(a) * rad;
+        if (p === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff7c2';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /** Briefly show the "BOSS WAVE" banner above the canvas. */
+  private showBossBanner(altitude: number): void {
+    if (this.bossBannerEl) this.bossBannerEl.remove();
+    const el = document.createElement('div');
+    el.className = 'boss-wave-banner';
+    el.innerHTML = `BOSS WAVE<em>${altitude}M — INCOMING</em>`;
+    this.overlayRoot.appendChild(el);
+    this.bossBannerEl = el;
+    el.addEventListener('animationend', () => {
+      el.remove();
+      if (this.bossBannerEl === el) this.bossBannerEl = null;
+    }, { once: true });
+    setTimeout(() => {
+      if (el.isConnected) el.remove();
+      if (this.bossBannerEl === el) this.bossBannerEl = null;
+    }, 2000);
+  }
+
   private async maybeShowAd(): Promise<void> {
     if (!this.crazy.available) return;
     await this.crazy.requestAd('midgame', 240);
@@ -2637,6 +2835,14 @@ export class Game {
    * Game Over screen on close so the player isn't dumped to a blank canvas.
    */
   private openShare(ctx: GameOverContext): void {
+    const topTricks = ctx.trickSummary
+      ? ctx.trickSummary.tricks.slice(0, 4).map((t) => ({
+          name: t.name,
+          count: t.count,
+          color: t.color,
+        }))
+      : undefined;
+    const isPersonalBest = ctx.newBestAltitude || ctx.newBestScore || ctx.newBestTime;
     const data: ShareCardData = {
       mode: ctx.mode,
       score: ctx.score,
@@ -2645,7 +2851,9 @@ export class Game {
       elapsedSeconds: ctx.elapsedSeconds,
       playerName: this.playerNameForBoard(),
       gameUrl: this.canonicalGameUrl(),
+      isPersonalBest,
       ...(this.lastDailyRank ? { dailyRank: this.lastDailyRank } : {}),
+      ...(topTricks ? { topTricks } : {}),
     };
     this.gameOver.close();
     this.shareScreen.open(data, () => this.openGameOver(ctx));
@@ -2770,6 +2978,10 @@ export class Game {
     this.trickCallout.clear();
     this.recorder.stop();
     this.recorder.discard();
+    this.bossDebris.length = 0;
+    this.bossBannerEl?.remove();
+    this.bossBannerEl = null;
+    this.bossRewardFrames = 0;
     if (this.tutorial) {
       this.tutorial.destroy();
       this.tutorial = null;
