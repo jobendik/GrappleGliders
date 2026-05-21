@@ -1405,6 +1405,26 @@ kbd {
   100% { opacity: 0; transform: scale(1) translateY(-12px); }
 }
 
+/* Tighten the boss banner + trick callout on narrow screens — otherwise the
+   wide letter-spacing overflows the viewport on phones. */
+@media (max-width: 640px) {
+  .boss-wave-banner {
+    font-size: 30px;
+    letter-spacing: 0.16em;
+  }
+  .boss-wave-banner em {
+    font-size: 13px;
+    letter-spacing: 0.22em;
+  }
+  .trick-callout {
+    font-size: 28px;
+    letter-spacing: 0.1em;
+  }
+  .trick-callout em {
+    font-size: 15px;
+  }
+}
+
 /* Streak nudge on game over screen — encourages return tomorrow. */
 .streak-nudge {
   margin: 12px 0 4px;
