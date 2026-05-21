@@ -9,6 +9,12 @@ export interface PlayerInputState {
   dashRequested: boolean;
   hookTarget: Vec2 | null;
   releaseHook: boolean;
+  /**
+   * Current aim point in world space, even when not firing. Used to give
+   * dash a meaningful direction when the player has a finger held / mouse
+   * positioned but hasn't committed to a hook shot.
+   */
+  aimPoint?: Vec2 | null;
 }
 
 export interface PlayerEvents {
@@ -145,10 +151,21 @@ export class Player {
     const speed = this.vel.len();
     if (speed > PHYSICS.maxSpeed) this.vel.scale(PHYSICS.maxSpeed / speed);
 
-    // Dash
+    // Dash. Direction priority on mobile/desktop alike:
+    //   1. Explicit hookTarget (just-fired shot direction)
+    //   2. Current aim point (finger held / mouse positioned)
+    //   3. Velocity direction if moving fast enough (forward boost)
+    //   4. Straight up (fallback for a stationary player)
     if (input.dashRequested && this.dashCharges > 0 && this.hook.state !== 'attached') {
-      const target = input.hookTarget ?? new Vec2(this.pos.x, this.pos.y - 100);
-      const dir = new Vec2(target.x - this.pos.x, target.y - this.pos.y).norm();
+      const dir = new Vec2(0, -1);
+      const aim = input.hookTarget ?? input.aimPoint ?? null;
+      if (aim) {
+        dir.set(aim.x - this.pos.x, aim.y - this.pos.y);
+        if (dir.lenSq() < 1e-3) dir.set(0, -1);
+        else dir.norm();
+      } else if (this.vel.lenSq() > 40) {
+        dir.set(this.vel.x, this.vel.y).norm();
+      }
       this.vel.x += dir.x * PHYSICS.dashSpeed;
       this.vel.y += dir.y * PHYSICS.dashSpeed;
       this.dashCharges -= 1;

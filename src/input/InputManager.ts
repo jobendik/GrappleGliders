@@ -12,6 +12,8 @@ export interface InputSnapshot {
   isTouch: boolean;
   hasTwoFingers: boolean;
   twoFingerSwipeDown: boolean;
+  /** Time (ms) the primary pointer has been held this press. 0 when idle. */
+  pointerHoldMs: number;
 }
 
 export type AudioUnlockCallback = () => void;
@@ -36,11 +38,12 @@ export class InputManager {
   private secondTouchActive = false;
   private audioUnlockCallback: AudioUnlockCallback | null = null;
   private audioUnlocked = false;
-  // For tap-toggle mode
-  private toggleActive = false;
-  private lastTapTime = 0;
   /** Soft steering applied by on-screen left/right buttons. -1, 0, or 1. */
   private softSteer = 0;
+  /** Soft rope reel (-1 = reel in, 1 = pay out) applied by on-screen mobile buttons. */
+  private softReel: -1 | 0 | 1 = 0;
+  /** performance.now() timestamp at which the current press began. */
+  private pointerDownAt = 0;
 
   constructor(element: HTMLElement) {
     this.element = element;
@@ -188,33 +191,22 @@ export class InputManager {
   }
 
   private setPointerDown(down: boolean): void {
-    if (this.tapToggle) {
-      if (down && !this.toggleActive) {
-        // First press starts grapple; releasing leaves it active until next tap.
-        const now = performance.now();
-        if (now - this.lastTapTime < 280) {
-          this.toggleActive = false; // double-tap releases
-          if (this.pointerDown) this.pointerJustReleased = true;
-          this.pointerDown = false;
-        } else {
-          this.toggleActive = true;
-          if (!this.pointerDown) this.pointerJustDown = true;
-          this.pointerDown = true;
-        }
-        this.lastTapTime = now;
-      } else if (!down) {
-        // Releasing finger does nothing in toggle mode.
-      }
-      return;
+    if (down && !this.pointerDown) {
+      this.pointerJustDown = true;
+      this.pointerDownAt = performance.now();
     }
-    if (down && !this.pointerDown) this.pointerJustDown = true;
     if (!down && this.pointerDown) this.pointerJustReleased = true;
     this.pointerDown = down;
   }
 
+  /**
+   * Legacy no-op preserved for save-file compatibility. The old tap-toggle
+   * model has been replaced by the touch-aim-release flow handled in
+   * Game.ts. Kept so Game.ts callers don't need to be updated and so the
+   * tapToggle field in SaveSettings doesn't crash on load.
+   */
   setTapToggle(enabled: boolean): void {
     this.tapToggle = enabled;
-    this.toggleActive = false;
   }
 
   /** Software-trigger dash from on-screen button. */
@@ -233,6 +225,11 @@ export class InputManager {
     this.softSteer = value;
   }
 
+  /** Soft reel (-1 reel in / +1 pay out) applied by on-screen mobile buttons. */
+  setSoftReel(value: -1 | 0 | 1): void {
+    this.softReel = value;
+  }
+
   snapshot(): InputSnapshot {
     let move = 0;
     if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) move -= 1;
@@ -242,6 +239,8 @@ export class InputManager {
     let reel: -1 | 0 | 1 = 0;
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) reel = -1;
     else if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) reel = 1;
+    // Soft reel overrides when keyboard is idle.
+    if (reel === 0 && this.softReel !== 0) reel = this.softReel;
 
     const snap: InputSnapshot = {
       pointerDown: this.pointerDown,
@@ -255,6 +254,7 @@ export class InputManager {
       isTouch: this.isTouch,
       hasTwoFingers: this.hasTwoFingers,
       twoFingerSwipeDown: this.twoFingerSwipeDown,
+      pointerHoldMs: this.pointerDown ? performance.now() - this.pointerDownAt : 0,
     };
     return snap;
   }

@@ -20,19 +20,30 @@ interface TutorialStep {
   threshold?: number;
 }
 
-const STEPS: TutorialStep[] = [
+/**
+ * Tutorial copy is gesture-aware: on touch devices it teaches the drag-aim,
+ * release-to-fire model; on desktop it teaches the classic click-and-hold.
+ * Both share the same `require` keys so the underlying flow is identical.
+ */
+const isTouchDevice = (): boolean =>
+  typeof window !== 'undefined' &&
+  (matchMedia?.('(pointer: coarse)').matches ||
+    'ontouchstart' in window ||
+    (navigator?.maxTouchPoints ?? 0) > 0);
+
+const TOUCH_STEPS: TutorialStep[] = [
   {
-    message: 'Aim at a glowing platform — click & HOLD (or tap & hold on mobile) to fire your grapple.',
+    message: 'Drag from anywhere — a reticle snaps to glowing platforms. Lift your finger to fire your grapple.',
     require: 'hookConnect',
     fallbackMs: 15000,
   },
   {
-    message: 'Now RELEASE to fling forward. Bigger swings launch you higher.',
+    message: 'Once attached, use the ▲ button to climb the rope, or ▼ to swing wider. Tap anywhere to release.',
     require: 'hookRelease',
-    fallbackMs: 12000,
+    fallbackMs: 14000,
   },
   {
-    message: 'Press SPACE (desktop) or tap the DASH button (mobile) to burst through gaps.',
+    message: 'Tap the DASH button to burst forward. Your aim direction matters — finger held = dash that way.',
     require: 'dash',
     fallbackMs: 12000,
     highlight: '.touch-btn.dash',
@@ -44,6 +55,32 @@ const STEPS: TutorialStep[] = [
     fallbackMs: 30000,
   },
 ];
+
+const DESKTOP_STEPS: TutorialStep[] = [
+  {
+    message: 'Aim at a glowing platform — click & HOLD to fire your grapple.',
+    require: 'hookConnect',
+    fallbackMs: 15000,
+  },
+  {
+    message: 'Now RELEASE to fling forward. Bigger swings launch you higher.',
+    require: 'hookRelease',
+    fallbackMs: 12000,
+  },
+  {
+    message: 'Press SPACE to dash — burst through gaps. (W/S reels the rope in or out while attached.)',
+    require: 'dash',
+    fallbackMs: 12000,
+  },
+  {
+    message: 'Lava is rising — climb fast. Reach 100m to finish the tutorial.',
+    require: 'altitude',
+    threshold: 100,
+    fallbackMs: 30000,
+  },
+];
+
+const STEPS: TutorialStep[] = isTouchDevice() ? TOUCH_STEPS : DESKTOP_STEPS;
 
 export class Tutorial {
   private card: HTMLDivElement;

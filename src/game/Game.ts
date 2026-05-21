@@ -3,6 +3,7 @@ import { Bot, BOT_PERSONALITIES } from './Bot';
 import { World, type Obstacle } from './World';
 import { Camera } from './Camera';
 import { GameMode, GameState } from './GameState';
+import { PHYSICS, Vec2 } from './Physics';
 
 import { ParticleSystem } from '../render/Particles';
 import { ScreenEffects } from '../render/ScreenEffects';
@@ -91,6 +92,13 @@ interface RaceParticipant {
   altitude: number;
   finished: boolean;
   finishTime: number | null;
+}
+
+interface TouchControlHandles {
+  _pauseBtn?: HTMLButtonElement;
+  _steerEl?: HTMLDivElement | null;
+  _reelEl?: HTMLDivElement | null;
+  _dashBtn?: HTMLButtonElement;
 }
 
 export class Game {
@@ -226,6 +234,25 @@ export class Game {
   private bossBannerEl: HTMLDivElement | null = null;
   /** Frames remaining for the current boss-wave reward window (slows the lava). */
   private bossRewardFrames = 0;
+
+  /**
+   * Mobile aim state — populated each frame while a touch is being held and
+   * the hook is idle. Drives the on-screen aim reticle + assist line, and is
+   * what gets committed when the player lifts their finger.
+   */
+  private aimActive = false;
+  private aimWorldX = 0;
+  private aimWorldY = 0;
+  /** Snapped aim target (set when aim assist found a grappleable obstacle). */
+  private aimSnapTarget: { x: number; y: number; obstacle: import('./World').Obstacle } | null = null;
+  /** Last obstacle id we snapped to — used to trigger a haptic on acquisition. */
+  private lastAimSnapId: number | null = null;
+
+  /**
+   * On-screen reel-in/reel-out buttons for mobile (shown only while hook is
+   * attached). The element handle is stored on the touch-controls wrapper
+   * via the TouchControlHandles interface.
+   */
 
   constructor(opts: {
     canvas: HTMLCanvasElement;
@@ -433,6 +460,7 @@ export class Game {
     this.render(rawDt);
     if (this.state === GameState.Playing && !this.paused && this.player) {
       this.updateHUD();
+      this.updateTouchControlsState();
     }
 
     // Auto-quality downgrade based on sustained slow frames
@@ -510,22 +538,89 @@ export class Game {
       this.sfx.setLavaRoarIntensity(lavaRoar);
     }
 
-    // Build input for player
+    // Build input for player.
+    //
+    // Mobile uses a fundamentally different gesture than desktop:
+    //   - Desktop: click & hold = fire instantly + stay attached + reel in
+    //   - Mobile:  drag = aim (reticle visible), release = fire
+    //              tap while attached = release hook
+    //              dedicated reel buttons = climb / pay out rope
+    //
+    // The mobile model removes the "finger covers the screen during a swing"
+    // problem and lets the player see what they're committing to before they
+    // commit. Aim assist snaps to the nearest grappleable obstacle within a
+    // generous radius so chubby thumbs don't have to be precise.
     const worldPointer = this.camera.screenToWorld(snap.pointer.x, snap.pointer.y);
     const dashRequested =
       snap.dashJustPressed || (snap.twoFingerSwipeDown && this.player.dashCharges > 0);
-    if (snap.dashJustPressed) {
-      // Already counted.
+
+    let hookTarget: Vec2 | null = null;
+    let releaseHookFlag = false;
+    let aimPointForDash: Vec2 | null = null;
+    let playerPointerDown = snap.pointerDown;
+
+    if (snap.isTouch) {
+      // While idle, dragging shows the aim reticle. The shot fires on release.
+      if (this.player.hook.state === 'idle' && snap.pointerDown) {
+        const snapped = this.findAimSnap(worldPointer);
+        this.aimActive = true;
+        this.aimWorldX = (snapped ?? worldPointer).x;
+        this.aimWorldY = (snapped ?? worldPointer).y;
+        this.aimSnapTarget = snapped
+          ? { x: snapped.x, y: snapped.y, obstacle: snapped.obstacle }
+          : null;
+        // Subtle haptic when the snap acquires a new target.
+        const snapId = this.aimSnapTarget?.obstacle.id ?? null;
+        if (snapId !== null && snapId !== this.lastAimSnapId) {
+          this.haptics.trigger('nearMiss');
+        }
+        this.lastAimSnapId = snapId;
+        aimPointForDash = new Vec2(this.aimWorldX, this.aimWorldY);
+      } else {
+        this.aimActive = false;
+        this.aimSnapTarget = null;
+        this.lastAimSnapId = null;
+      }
+
+      // Commit fire on release if the hook was idle when the press began.
+      if (snap.pointerJustReleased) {
+        if (this.player.hook.state === 'idle' && snap.pointerHoldMs < 4000) {
+          // Quick-tap or drag-and-release — fire toward the (snapped) world point.
+          const snapped = this.findAimSnap(worldPointer);
+          hookTarget = snapped
+            ? new Vec2(snapped.x, snapped.y)
+            : worldPointer;
+        } else if (this.player.hook.state === 'attached') {
+          // Tap while attached releases the rope.
+          releaseHookFlag = true;
+        }
+      }
+
+      // On touch, never auto-reel just because a finger is touching — the
+      // dedicated reel buttons are the only way to reel in/out. Otherwise
+      // the player would have to keep their finger on the screen (covering
+      // their view) to climb a swing.
+      playerPointerDown = false;
+    } else {
+      // Desktop: classic hold-to-grapple. Click commits instantly.
+      if (snap.pointerJustDown) {
+        const snapped = this.findAimSnap(worldPointer);
+        hookTarget = snapped ? new Vec2(snapped.x, snapped.y) : worldPointer;
+      }
+      releaseHookFlag = snap.pointerJustReleased;
+      if (snap.pointerDown) aimPointForDash = worldPointer;
+      this.aimActive = false;
+      this.aimSnapTarget = null;
     }
+
     const playerInput: PlayerInputState = {
       moveX: snap.moveX,
       reel: snap.reel,
-      pointerDown: snap.pointerDown,
+      pointerDown: playerPointerDown,
       dashRequested,
-      hookTarget: snap.pointerJustDown
-        ? worldPointer
-        : null,
-      releaseHook: snap.pointerJustReleased,
+      hookTarget,
+      releaseHook: releaseHookFlag,
+      aimPoint: aimPointForDash,
     };
     if (dashRequested && this.player.dashCharges > 0) this.dashCount += 1;
 
@@ -917,6 +1012,12 @@ export class Game {
       this.drawBossDebris();
       // Particles
       this.particles.draw(this.renderer.ctx, this.lowQuality);
+      // Aim assist reticle — shows where the next grapple will fire while the
+      // player is dragging on mobile. Drawn over particles so it stays legible
+      // against busy backgrounds.
+      if (this.aimActive) {
+        this.drawAimAssist();
+      }
       // Floating texts
       this.screen.drawWorld(this.renderer.ctx);
       this.renderer.popCamera();
@@ -1078,6 +1179,93 @@ export class Game {
       ctx.fillStyle = `rgba(255,37,94,${(intensity - 0.75) * 0.45})`;
       ctx.fillRect(0, 0, w, h);
     }
+    ctx.restore();
+  }
+
+  /**
+   * Draws the aim reticle + assist line while the player is dragging to aim
+   * (touch-only path). Visible feedback is the whole point of the mobile
+   * overhaul — players should never have to commit to a shot blindly.
+   */
+  private drawAimAssist(): void {
+    if (!this.player) return;
+    const ctx = this.renderer.ctx;
+    const px = this.player.pos.x;
+    const py = this.player.pos.y;
+    const ax = this.aimWorldX;
+    const ay = this.aimWorldY;
+    const snapped = this.aimSnapTarget !== null;
+    const theme = this.themes.current;
+    const color = snapped ? theme.accent : '#ffffff';
+    const t = this.framesSinceStart * 0.12;
+    const pulse = 0.6 + Math.sin(t) * 0.4;
+
+    ctx.save();
+    // Dashed line from player toward the aim point — moving dash offset to
+    // sell "energy traveling along the line".
+    ctx.setLineDash([6, 8]);
+    ctx.lineDashOffset = -this.framesSinceStart * 0.6;
+    ctx.strokeStyle = snapped
+      ? `rgba(0,243,255,${0.7 + pulse * 0.2})`
+      : 'rgba(255,255,255,0.42)';
+    ctx.lineWidth = snapped ? 2.2 : 1.4;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    // Clip the line short of the reticle so it doesn't visually clash with
+    // the ring.
+    const dx = ax - px;
+    const dy = ay - py;
+    const dist = Math.hypot(dx, dy);
+    if (dist > 0) {
+      const stopT = Math.max(0, (dist - 22) / dist);
+      ctx.lineTo(px + dx * stopT, py + dy * stopT);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Reticle ring
+    ctx.lineWidth = snapped ? 2.4 : 1.6;
+    ctx.strokeStyle = color;
+    const r = snapped ? 18 + pulse * 4 : 14;
+    ctx.beginPath();
+    ctx.arc(ax, ay, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Crosshair tick marks
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = snapped ? color : 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 2;
+    const tick = snapped ? 8 : 5;
+    ctx.beginPath();
+    ctx.moveTo(ax - r - tick, ay);
+    ctx.lineTo(ax - r + 2, ay);
+    ctx.moveTo(ax + r - 2, ay);
+    ctx.lineTo(ax + r + tick, ay);
+    ctx.moveTo(ax, ay - r - tick);
+    ctx.lineTo(ax, ay - r + 2);
+    ctx.moveTo(ax, ay + r - 2);
+    ctx.lineTo(ax, ay + r + tick);
+    ctx.stroke();
+
+    // Inner dot
+    ctx.fillStyle = snapped ? color : 'rgba(255,255,255,0.9)';
+    ctx.beginPath();
+    ctx.arc(ax, ay, snapped ? 3 : 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Range warning: if the raw pointer is outside the max range, draw a
+    // faint "out of range" indicator so the player understands why nothing
+    // is happening when they tap a far-away tower.
+    if (dist > PHYSICS.hookMaxRange) {
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = 'rgba(255,80,80,0.7)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      const cap = PHYSICS.hookMaxRange;
+      ctx.arc(px, py, cap, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 
@@ -3216,6 +3404,49 @@ export class Game {
     return (h ^ 0xc0ffee) >>> 0;
   }
 
+  /**
+   * Aim assist: snap to the nearest grappleable obstacle within a generous
+   * radius of the player's touch / cursor. Returns the center of the obstacle
+   * (which also earns the perfect-anchor bonus) or null if nothing nearby.
+   *
+   * Snap radius is much larger on touch devices to forgive chubby thumbs.
+   * Snap is suppressed for obstacles strictly below the player because the
+   * hook physically can't fire downward (see GrapplingHook.shoot).
+   */
+  private findAimSnap(worldPointer: Vec2): { x: number; y: number; obstacle: import('./World').Obstacle } | null {
+    if (!this.world || !this.player) return null;
+    if (!this.save.data.settings.aimAssist) return null;
+    const isTouch = this.input.isTouch;
+    const snapRadius = isTouch ? 90 : 18; // world-space pixels
+    const px = this.player.pos.x;
+    const py = this.player.pos.y;
+    const maxRange = PHYSICS.hookMaxRange;
+    let best: { x: number; y: number; obstacle: import('./World').Obstacle; score: number } | null = null;
+    for (const obs of this.world.obstacles) {
+      if (!obs.grappleable) continue;
+      const cx = obs.x + obs.width / 2;
+      const cy = obs.y + obs.height / 2;
+      // Reject obstacles below the player — hook can't fire downward.
+      if (cy > py + 8) continue;
+      const distFromPlayer = Math.hypot(cx - px, cy - py);
+      if (distFromPlayer > maxRange) continue;
+      // Closest point on the obstacle rect to the raw aim point.
+      const clx = Math.max(obs.x, Math.min(worldPointer.x, obs.x + obs.width));
+      const cly = Math.max(obs.y, Math.min(worldPointer.y, obs.y + obs.height));
+      const distFromPointer = Math.hypot(clx - worldPointer.x, cly - worldPointer.y);
+      if (distFromPointer > snapRadius) continue;
+      // Score: prefer obstacles close to the touch; gentle bias toward
+      // those at a workable range from the player so a tap doesn't snap
+      // onto something already touching the glider.
+      const rangeBias = Math.max(0, 60 - distFromPlayer) * 0.5;
+      const score = distFromPointer + rangeBias;
+      if (!best || score < best.score) {
+        best = { x: cx, y: cy, obstacle: obs, score };
+      }
+    }
+    return best ? { x: best.x, y: best.y, obstacle: best.obstacle } : null;
+  }
+
   private ensureTouchControls(): void {
     if (this.touchControlsEl) return;
     const wrap = document.createElement('div');
@@ -3223,6 +3454,7 @@ export class Game {
     const pause = document.createElement('button');
     pause.className = 'touch-btn pause';
     pause.textContent = 'II';
+    pause.setAttribute('aria-label', 'Pause');
     pause.addEventListener('touchstart', (e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -3231,7 +3463,9 @@ export class Game {
     pause.addEventListener('click', () => this.pause());
     const dash = document.createElement('button');
     dash.className = 'touch-btn dash';
-    dash.textContent = 'DASH';
+    // Inner span carries the visible text; we'll add charge pips on the parent.
+    dash.innerHTML = '<span class="dash-label">DASH</span><span class="dash-pips" data-el="pips"></span>';
+    dash.setAttribute('aria-label', 'Dash');
     dash.addEventListener('touchstart', (e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -3241,6 +3475,41 @@ export class Game {
     wrap.appendChild(dash);
     this.touchRoot.appendChild(wrap);
     document.body.appendChild(pause);
+
+    // Reel buttons (mobile climb / pay-out rope) — only meaningful while a
+    // hook is attached, but we create them up-front and toggle visibility.
+    // Without these, mobile players literally cannot lengthen their rope
+    // (keyboard W/S is unavailable) and cannot reel in without holding their
+    // finger over the playfield.
+    const reelWrap = document.createElement('div');
+    reelWrap.className = 'touch-reel';
+    reelWrap.innerHTML = `
+      <button class="touch-btn reel-btn reel-in" data-dir="-1" aria-label="Reel rope in">▲</button>
+      <button class="touch-btn reel-btn reel-out" data-dir="1" aria-label="Pay rope out">▼</button>
+    `;
+    const reelIn = reelWrap.querySelector<HTMLButtonElement>('.reel-in')!;
+    const reelOut = reelWrap.querySelector<HTMLButtonElement>('.reel-out')!;
+    const bindReel = (el: HTMLElement, dir: -1 | 1): void => {
+      const start = (e: Event): void => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.input.setSoftReel(dir);
+      };
+      const end = (e: Event): void => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.input.setSoftReel(0);
+      };
+      el.addEventListener('touchstart', start, { passive: false });
+      el.addEventListener('touchend', end, { passive: false });
+      el.addEventListener('touchcancel', end, { passive: false });
+      el.addEventListener('mousedown', start);
+      el.addEventListener('mouseup', end);
+      el.addEventListener('mouseleave', end);
+    };
+    bindReel(reelIn, -1);
+    bindReel(reelOut, 1);
+    document.body.appendChild(reelWrap);
 
     // Optional on-screen steering arrows. Always show on touch devices so the
     // control is discoverable; players can hide via Settings if they prefer
@@ -3280,18 +3549,50 @@ export class Game {
     }
 
     this.touchControlsEl = wrap;
-    (wrap as unknown as { _pauseBtn: HTMLButtonElement; _steerEl: HTMLDivElement | null })._pauseBtn = pause;
-    (wrap as unknown as { _pauseBtn: HTMLButtonElement; _steerEl: HTMLDivElement | null })._steerEl = steerEl;
+    (wrap as unknown as TouchControlHandles)._pauseBtn = pause;
+    (wrap as unknown as TouchControlHandles)._steerEl = steerEl;
+    (wrap as unknown as TouchControlHandles)._reelEl = reelWrap;
+    (wrap as unknown as TouchControlHandles)._dashBtn = dash;
   }
 
   private removeTouchControls(): void {
     if (!this.touchControlsEl) return;
-    const handles = this.touchControlsEl as unknown as { _pauseBtn?: HTMLButtonElement; _steerEl?: HTMLDivElement | null };
+    const handles = this.touchControlsEl as unknown as TouchControlHandles;
     handles._pauseBtn?.remove();
     handles._steerEl?.remove();
+    handles._reelEl?.remove();
     this.touchControlsEl.remove();
     this.touchControlsEl = null;
     this.input.setSoftSteer(0);
+    this.input.setSoftReel(0);
+  }
+
+  /**
+   * Per-frame visibility + state updates for the mobile control overlay.
+   * Reel buttons only show while a hook is attached (otherwise they'd be
+   * dead UI taking up screen space); the dash button shows live charges.
+   */
+  private updateTouchControlsState(): void {
+    if (!this.touchControlsEl || !this.player) return;
+    const handles = this.touchControlsEl as unknown as TouchControlHandles;
+    const attached = this.player.hook.state === 'attached';
+    if (handles._reelEl) {
+      handles._reelEl.classList.toggle('visible', attached);
+    }
+    // Dash charge pips: render small dots matching available dash charges.
+    if (handles._dashBtn) {
+      const pips = handles._dashBtn.querySelector<HTMLElement>('[data-el="pips"]');
+      if (pips) {
+        const charges = this.player.dashCharges;
+        const maxCharges = PHYSICS.maxDashCharges;
+        const lit = '●';
+        const dim = '○';
+        let s = '';
+        for (let i = 0; i < maxCharges; i++) s += i < charges ? lit : dim;
+        if (pips.textContent !== s) pips.textContent = s;
+        handles._dashBtn.classList.toggle('ready', charges > 0);
+      }
+    }
   }
 
   destroy(): void {

@@ -17,6 +17,13 @@ export interface SaveSettings {
   tapToggle: boolean;
   /** Show on-screen left/right arrows on mobile in addition to the dash button. */
   mobileSteering: boolean;
+  /**
+   * Aim assist: snap touch / mouse aim to the nearest grappleable obstacle
+   * within a generous radius. Hugely improves mobile playability without
+   * removing skill expression; defaults on but can be turned off by
+   * precision-aim purists.
+   */
+  aimAssist: boolean;
 }
 
 export interface DailyHistoryEntry {
@@ -94,6 +101,7 @@ const defaultSettings: SaveSettings = {
   quality: 'auto',
   tapToggle: false,
   mobileSteering: true,
+  aimAssist: true,
 };
 
 export const defaultSave = (): SaveData => ({

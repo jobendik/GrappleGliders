@@ -190,7 +190,7 @@ export class SettingsScreen {
     renderToggle('Haptics', 'haptics');
     renderToggle('Reduced Motion', 'reducedMotion');
     renderToggle('Show Ghost', 'showGhost');
-    renderToggle('Tap Toggle Mode', 'tapToggle');
+    renderToggle('Aim Assist', 'aimAssist');
     renderToggle('Mobile Steering', 'mobileSteering');
 
     modal.querySelector('[data-el="back"]')!.addEventListener('click', () => {
