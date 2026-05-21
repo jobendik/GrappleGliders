@@ -1,6 +1,8 @@
 import { GameMode } from '../game/GameState';
 import { formatAltitude, formatScore, formatTime } from '../utils/format';
 import type { RunRewards } from '../systems/ProgressionSystem';
+import type { NextUnlockPreview } from '../systems/UnlockSystem';
+import type { TrickRunSummary } from '../systems/TrickSystem';
 
 export interface RacePodiumEntry {
   position: number;
@@ -32,6 +34,12 @@ export interface GameOverContext {
   adsAvailable: boolean;
   /** Current daily-login streak in days. */
   dailyStreak: number;
+  /** Cheapest cosmetic the player is progressing toward. */
+  nextUnlock?: NextUnlockPreview;
+  /** Tricks landed this run, sorted by score impact. */
+  trickSummary?: TrickRunSummary;
+  /** Whether a recorded run clip is available for download/share. */
+  replayAvailable?: boolean;
 }
 
 export interface GameOverCallbacks {
@@ -40,6 +48,8 @@ export interface GameOverCallbacks {
   onMenu(): void;
   onWatch2xAd(): void;
   onShare(): void;
+  /** Optional: download / share the recorded clip of this run. */
+  onSaveClip?(): void;
 }
 
 export class GameOverScreen {
@@ -65,8 +75,11 @@ export class GameOverScreen {
     modal.className = 'modal';
     const showRevive = ctx.canRevive && ctx.adsAvailable;
     const show2x = ctx.adsAvailable;
+    const showClip = ctx.replayAvailable === true && typeof cb.onSaveClip === 'function';
     const streakNudge = this.streakNudge(ctx.dailyStreak);
     const podiumHtml = ctx.racePodium ? this.renderPodium(ctx.racePodium) : '';
+    const trickHtml = ctx.trickSummary ? this.renderTrickSummary(ctx.trickSummary) : '';
+    const unlockHtml = ctx.nextUnlock ? this.renderUnlockProgress(ctx.nextUnlock, ctx.rewards.sparks) : '';
     modal.innerHTML = `
       <div class="modal-content">
         <h1 class="title gradient-text">Run Ended</h1>
@@ -89,11 +102,14 @@ export class GameOverScreen {
           ${ctx.newBestTime ? '<div class="stat"><span class="label">New</span><div class="value">Best time!</div></div>' : ''}
           ${ctx.raceResult && !ctx.racePodium ? `<div class="stat"><span class="label">Race</span><div class="value">${ctx.raceResult.position} of ${ctx.raceResult.total}</div></div>` : ''}
         </div>
+        ${trickHtml}
+        ${unlockHtml}
         ${streakNudge}
         <div class="actions">
           ${showRevive ? '<button class="primary" data-el="revive">Revive (watch ad)</button>' : ''}
           <button class="primary" data-el="retry">Retry</button>
           <button class="ghost" data-el="share">Share Run</button>
+          ${showClip ? '<button class="ghost" data-el="clip">Save Clip</button>' : ''}
           ${show2x ? '<button class="ghost" data-el="x2">Double Sparks (watch ad)</button>' : ''}
           <button class="ghost" data-el="menu">Main Menu</button>
         </div>
@@ -121,6 +137,58 @@ export class GameOverScreen {
       e.stopPropagation();
       cb.onShare();
     });
+    modal.querySelector('[data-el="clip"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      cb.onSaveClip?.();
+    });
+  }
+
+  /**
+   * Render a Sparks-progress bar toward the next unlock. Combines the player's
+   * starting balance (current minus the freshly-awarded run sparks) with the
+   * run contribution so the bar visibly fills.
+   */
+  private renderUnlockProgress(preview: NextUnlockPreview, runSparks: number): string {
+    const total = preview.current;
+    const cost = preview.cost;
+    const baseline = Math.max(0, total - runSparks);
+    const baselineProgress = Math.min(1, baseline / cost);
+    const totalProgress = Math.min(1, total / cost);
+    const remaining = Math.max(0, cost - total);
+    const summary = remaining === 0
+      ? `Ready to claim: ${this.escapeHtml(preview.name)}`
+      : `+${runSparks} toward <strong>${this.escapeHtml(preview.name)}</strong> — ${remaining} more Sparks`;
+    return `
+      <div class="unlock-progress" aria-label="Next unlock progress">
+        <div class="unlock-progress-track">
+          <div class="unlock-progress-fill base" style="width:${(baselineProgress * 100).toFixed(1)}%"></div>
+          <div class="unlock-progress-fill earned" style="width:${(totalProgress * 100).toFixed(1)}%"></div>
+        </div>
+        <div class="unlock-progress-label">${summary}</div>
+      </div>
+    `;
+  }
+
+  /**
+   * Render the top tricks landed this run as a chip row. Skips entirely when
+   * no tricks were detected to avoid empty UI on early-death runs.
+   */
+  private renderTrickSummary(summary: TrickRunSummary): string {
+    if (summary.tricks.length === 0) return '';
+    const top = summary.tricks.slice(0, 4);
+    const chips = top
+      .map((t) => {
+        const count = t.count > 1 ? ` ×${t.count}` : '';
+        return `<span class="trick-chip" style="--trick-color:${t.color}">${this.escapeHtml(t.name)}${count}<em>+${Math.floor(t.score)}</em></span>`;
+      })
+      .join('');
+    const tail = summary.tricks.length > top.length ? ` <span class="trick-chip-more">+${summary.tricks.length - top.length} more</span>` : '';
+    return `
+      <div class="trick-summary" aria-label="Tricks landed">
+        <div class="trick-summary-header">TRICKS LANDED <em>+${Math.floor(summary.totalScore)} bonus</em></div>
+        <div class="trick-summary-chips">${chips}${tail}</div>
+      </div>
+    `;
   }
 
   private renderPodium(podium: RacePodiumEntry[]): string {

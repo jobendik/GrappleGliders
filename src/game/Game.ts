@@ -16,6 +16,8 @@ import { InputManager } from '../input/InputManager';
 
 import { ScoringSystem } from '../systems/ScoringSystem';
 import { ComboSystem } from '../systems/ComboSystem';
+import { TrickSystem } from '../systems/TrickSystem';
+import { RunRecorder } from '../systems/RunRecorder';
 import { SaveSystem } from '../systems/SaveSystem';
 import { ProgressionSystem } from '../systems/ProgressionSystem';
 import { AchievementSystem } from '../systems/AchievementSystem';
@@ -44,6 +46,7 @@ import { SettingsScreen } from '../ui/SettingsScreen';
 import { DailyChallengeScreen } from '../ui/DailyChallengeScreen';
 import { Tutorial } from '../ui/Tutorial';
 import { ToastManager } from '../ui/Toast';
+import { TrickCalloutManager } from '../ui/TrickCallout';
 import { NamePromptScreen } from '../ui/NamePromptScreen';
 import { ShareScreen } from '../ui/ShareScreen';
 import type { ShareCardData } from '../ui/ShareCard';
@@ -108,6 +111,8 @@ export class Game {
   save = new SaveSystem();
   scoring = new ScoringSystem();
   combo = new ComboSystem();
+  tricks = new TrickSystem();
+  recorder: RunRecorder;
   progression: ProgressionSystem;
   achievements: AchievementSystem;
   unlocks: UnlockSystem;
@@ -116,6 +121,7 @@ export class Game {
   crazy = new CrazyGamesPlatform();
 
   toast: ToastManager;
+  trickCallout: TrickCalloutManager;
   hud: HUD | null = null;
   mainMenu: MainMenu;
   pauseMenu: PauseMenu;
@@ -201,6 +207,20 @@ export class Game {
   private prevPlayerRank = 1;
   /** Last integer countdown second played — avoids retriggering every tick. */
   private lastCountdownSec = -1;
+  /**
+   * Boss-wave debris: lethal falling obstacles spawned every 1000m in Endless.
+   * Tracks own physics + collision separately from World.obstacles so the
+   * spawn logic stays out of the deterministic seed.
+   */
+  private bossDebris: { x: number; y: number; vx: number; vy: number; r: number; ttl: number; rot: number; spin: number }[] = [];
+  /** Next altitude milestone (m) at which a boss wave triggers. 0 = disabled. */
+  private nextBossWaveAltitude = 0;
+  /** Endless-only flag: whether boss waves should be active. */
+  private bossWaveEnabled = false;
+  /** Banner element for the boss-wave warning. */
+  private bossBannerEl: HTMLDivElement | null = null;
+  /** Frames remaining for the current boss-wave reward window (slows the lava). */
+  private bossRewardFrames = 0;
 
   constructor(opts: {
     canvas: HTMLCanvasElement;
@@ -210,6 +230,7 @@ export class Game {
     toastRoot: HTMLElement;
   }) {
     this.renderer = new Renderer(opts.canvas);
+    this.recorder = new RunRecorder(opts.canvas);
     this.uiRoot = opts.uiRoot;
     this.touchRoot = opts.touchRoot;
     this.overlayRoot = opts.overlayRoot;
@@ -223,6 +244,27 @@ export class Game {
     this.daily = new DailyChallengeSystem(this.save);
     this.leaderboardSys = new LeaderboardSystem(this.buildLeaderboardBackend());
     this.toast = new ToastManager(this.toastRoot);
+    this.trickCallout = new TrickCalloutManager(this.overlayRoot);
+    // Bridge trick events to UI: floating banner, sfx, scoring bonus.
+    this.tricks.on((ev) => {
+      this.trickCallout.show(ev.name, ev.color, ev.score);
+      this.sfx.trick(ev.intensity);
+      this.scoring.addBonus(Math.floor(ev.score));
+      this.camera.flash(0.18 + ev.intensity * 0.15);
+      this.screen.pulseBloom(0.35 + ev.intensity * 0.25);
+      this.haptics.trigger('comboMilestone');
+      if (this.player) {
+        this.particles.shockwave(this.player.pos.x, this.player.pos.y, ev.color, {
+          size: 22 + ev.intensity * 18,
+          life: 0.55,
+          thickness: 3,
+        });
+        this.particles.sparkle(this.player.pos.x, this.player.pos.y, ev.color, {
+          size: 10,
+          life: 1,
+        });
+      }
+    });
     this.mainMenu = new MainMenu(this.overlayRoot);
     this.pauseMenu = new PauseMenu(this.overlayRoot);
     this.gameOver = new GameOverScreen(this.overlayRoot);
@@ -452,6 +494,11 @@ export class Game {
         this.killY -= this.lavaSpeed * dt;
       }
       this.world.setKillY(this.killY);
+      // Ambient lava roar — intensity scales with proximity to player.
+      // Fades in around 900px out, peaks when within ~200px.
+      const lavaDist = Math.max(0, this.killY - this.player.pos.y);
+      const lavaRoar = Math.max(0, Math.min(1, 1 - (lavaDist - 200) / 700));
+      this.sfx.setLavaRoarIntensity(lavaRoar);
     }
 
     // Build input for player
@@ -483,6 +530,16 @@ export class Game {
         this.sfx.ropeReelOut();
       }
     }
+
+    // Trick detection — runs *after* player.update so hook state transitions
+    // for this frame are visible. The system never mutates anything; it
+    // emits events on its own listeners.
+    this.tricks.update({
+      player: this.player,
+      killY: this.killY,
+      comboMultiplier: this.combo.combo,
+      framesSinceStart: this.framesSinceStart,
+    });
 
     // Track Iron Lungs achievement
     if (this.player.hook.state === 'attached') {
@@ -637,6 +694,23 @@ export class Game {
       this.celebrateMilestone(this.nextMilestone);
       if (this.nextMilestone < 500) this.nextMilestone += 250;
       else this.nextMilestone += 500;
+    }
+
+    // Boss waves: every 1000m in Endless. Lava also slows during the reward window.
+    if (
+      this.bossWaveEnabled &&
+      this.nextBossWaveAltitude > 0 &&
+      this.player.maxAltitude >= this.nextBossWaveAltitude
+    ) {
+      this.triggerBossWave(this.nextBossWaveAltitude);
+      this.nextBossWaveAltitude += 1000;
+    }
+    // Active boss debris: integrate physics, check player collision.
+    if (this.bossDebris.length > 0) this.updateBossDebris(dt);
+    // Reward window: temporarily slow the lava after a survived wave.
+    if (this.bossRewardFrames > 0) {
+      this.bossRewardFrames -= dt;
+      this.killY += this.lavaSpeed * 0.55 * dt; // negate ~55% of upward drift this frame
     }
 
     // Tutorial altitude notify (final step gates on this).
@@ -810,6 +884,8 @@ export class Game {
         this.framesSinceStart,
         this.lowQuality,
       );
+      // Boss debris (rendered before particles so embers overlay it).
+      this.drawBossDebris();
       // Particles
       this.particles.draw(this.renderer.ctx, this.lowQuality);
       // Floating texts
@@ -2027,6 +2103,8 @@ export class Game {
         if (e.perfectAnchor) {
           this.sfx.perfectAnchor();
           this.scoring.addBonus(50);
+          // Distinct perfect-anchor chime — separates skill recognition from combo sfx.
+          this.sfx.perfectAnchor();
           // Bigger callout + sparkle ring for perfect anchors
           this.particles.shockwave(e.position.x, e.position.y, '#00ff8a', { size: 28, life: 0.7, thickness: 4 });
           this.particles.sparkle(e.position.x, e.position.y, '#00ff8a', { size: 10, life: 1.2 });
@@ -2154,6 +2232,15 @@ export class Game {
           this.particles.sparkle(obs.x + obs.width / 2, obs.y + obs.height / 2, '#00f3ff', { size: 6, life: 0.6 });
         }
         this.screen.addFloatingText('NEAR MISS', obs.x + obs.width / 2, obs.y - 8, '#00f3ff', { size: 14 });
+        // Threading trick: 3+ near-misses in one airborne arc.
+        if (this.player) {
+          this.tricks.onNearMiss({
+            player: this.player,
+            killY: this.killY,
+            comboMultiplier: this.combo.combo,
+            framesSinceStart: this.framesSinceStart,
+          });
+        }
       },
       onBounce: (obs) => {
         this.sfx.bounce();
@@ -2168,6 +2255,13 @@ export class Game {
           this.particles.hotSpark(cx, cy, Math.cos(a) * sp, Math.sin(a) * sp, obs.color, 0.4);
         }
         this.haptics.trigger('bounce');
+        // Feed wall-run pre-condition: horizontal high-speed touch.
+        if (this.player) {
+          const v = this.player.vel;
+          const speed = v.len();
+          const horizontal = Math.abs(v.x) > Math.abs(v.y) * 0.8;
+          this.tricks.onBounce(speed, horizontal, this.framesSinceStart);
+        }
       },
       onShieldAbsorb: () => {
         this.sfx.shieldAbsorb();
@@ -2234,6 +2328,8 @@ export class Game {
     // Reset state
     this.scoring.reset();
     this.combo.reset();
+    this.tricks.reset();
+    this.trickCallout.clear();
     this.particles.clear();
     this.screen.clear();
     this.trailRenderer.reset();
@@ -2256,6 +2352,13 @@ export class Game {
     this.crumbledIds.clear();
     this.prevPlayerRank = 1;
     this.lastCountdownSec = -1;
+    this.bossDebris.length = 0;
+    this.bossBannerEl?.remove();
+    this.bossBannerEl = null;
+    this.bossRewardFrames = 0;
+    // Boss waves only fire in Endless climb. First wave hits at 1000m.
+    this.bossWaveEnabled = mode === GameMode.EndlessClimb;
+    this.nextBossWaveAltitude = this.bossWaveEnabled ? 1000 : 0;
     this.ghostRecording = [];
     this.ghostPlayback =
       mode === GameMode.EndlessClimb || mode === GameMode.DailyChallenge
@@ -2302,6 +2405,9 @@ export class Game {
     this.paused = false;
     this.crazy.gameplayStart();
     if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
+    // Begin capturing the canvas for the run-replay export. Safe to call on
+    // unsupported browsers — it no-ops.
+    this.recorder.start();
 
     if (mode === GameMode.BotRace) this.sfx.raceStartCountdown();
 
@@ -2384,6 +2490,9 @@ export class Game {
     this.gameEnded = true;
     this.lastCause = cause;
     this.crazy.gameplayStop();
+    // Stop the run recorder — the clip is finalized asynchronously, but
+    // finalizeNow() can synthesize one from buffered chunks for instant access.
+    this.recorder.stop();
     if (!this.player) return;
 
     const altitude = this.player.maxAltitude;
@@ -2504,6 +2613,12 @@ export class Game {
       this.save.data.sparks += this.runSparks;
       rewards.sparks += this.runSparks;
     }
+    // Triumphant fanfare if the player crossed a level boundary this run.
+    if (rewards.levelUps.length > 0) {
+      this.sfx.levelUp();
+    }
+    // Stop the ambient lava roar — leaving the active run.
+    this.sfx.stopLavaRoar();
     this.save.save();
     this.save.flush();
 
@@ -2522,6 +2637,9 @@ export class Game {
     this.hud?.destroy();
     this.hud = null;
     this.removeTouchControls();
+    const trickSummary = this.tricks.summary();
+    const nextUnlock = this.unlocks.nextCheapestUnlock();
+    const replayAvailable = this.recorder?.hasClip() ?? false;
     const ctx: GameOverContext = {
       mode: this.mode,
       cause,
@@ -2541,17 +2659,184 @@ export class Game {
         (this.mode === GameMode.EndlessClimb || this.mode === GameMode.DailyChallenge),
       adsAvailable: this.crazy.available,
       dailyStreak: this.save.data.dailyStreak,
+      replayAvailable,
       ...(raceResult ? { raceResult } : {}),
       ...(racePodium ? { racePodium } : {}),
+      ...(trickSummary.tricks.length > 0 ? { trickSummary } : {}),
+      ...(nextUnlock ? { nextUnlock } : {}),
     };
     void this.maybeShowAd();
+    this.openGameOver(ctx);
+  }
+
+  /** Open the game-over screen and bind all retry/menu/share/clip callbacks. */
+  private openGameOver(ctx: GameOverContext): void {
     this.gameOver.open(ctx, {
       onRetry: () => this.startMode(this.mode),
       onMenu: () => this.openMainMenu(),
       onRevive: () => this.requestRevive(),
       onWatch2xAd: () => void this.watchDoubleAd(),
       onShare: () => this.openShare(ctx),
+      onSaveClip: () => void this.saveClip(),
     });
+  }
+
+  /**
+   * Trigger a boss wave at the given altitude milestone. Spawns lethal debris
+   * raining from above the player, plays alarm SFX, flashes the screen, and
+   * shows a brief warning banner.
+   */
+  private triggerBossWave(altitude: number): void {
+    if (!this.player) return;
+    this.sfx.bossAlert();
+    this.camera.flash(0.42);
+    this.camera.shake(14);
+    this.screen.pulseBloom(0.6);
+    this.screen.setComboTint('#ff255e', 0.7);
+    this.haptics.trigger('death');
+    this.showBossBanner(altitude);
+    // Spawn 6–8 debris, randomly distributed across the player's view width,
+    // 600–900px above current position. Each falls with gravity + slight horizontal drift.
+    const count = 6 + Math.floor(Math.random() * 3);
+    const w = this.renderer.cssWidth;
+    for (let i = 0; i < count; i++) {
+      const x = this.player.pos.x - w * 0.5 + (i + Math.random() * 0.6) * (w / count);
+      const y = this.player.pos.y - 700 - Math.random() * 240;
+      const vx = (Math.random() - 0.5) * 1.2;
+      const vy = 1.4 + Math.random() * 1.6;
+      const r = 18 + Math.random() * 10;
+      const spin = (Math.random() - 0.5) * 0.18;
+      this.bossDebris.push({ x, y, vx, vy, r, ttl: 360, rot: Math.random() * Math.PI * 2, spin });
+    }
+    // Generate a screen-wide warning shockwave so the player can read the spawn area.
+    this.particles.shockwave(this.player.pos.x, this.player.pos.y - 200, '#ff255e', {
+      size: 80,
+      life: 0.9,
+      thickness: 4,
+    });
+    // Schedule the lava-slow reward — 6 seconds of partial recovery starts now.
+    this.bossRewardFrames = 360;
+  }
+
+  /**
+   * Per-frame boss debris update: gravity, collision with player, expiry.
+   * Lethal on impact (or shield-absorbed if active).
+   */
+  private updateBossDebris(dt: number): void {
+    if (!this.player) {
+      this.bossDebris.length = 0;
+      return;
+    }
+    const player = this.player;
+    for (let i = this.bossDebris.length - 1; i >= 0; i--) {
+      const d = this.bossDebris[i]!;
+      // Slight tracking — gently nudge vx toward the player's x while in flight.
+      const dx = player.pos.x - d.x;
+      d.vx += Math.sign(dx) * 0.012 * dt;
+      d.vy += 0.18 * dt; // gravity
+      d.x += d.vx * dt;
+      d.y += d.vy * dt;
+      d.rot += d.spin * dt;
+      d.ttl -= dt;
+      // Trailing embers
+      if (Math.random() < 0.55) {
+        this.particles.ember(d.x, d.y, Math.random() < 0.5 ? '#ff255e' : '#ffd400');
+      }
+      // Collision with player (circle vs circle approximation).
+      const cdx = player.pos.x - d.x;
+      const cdy = player.pos.y - d.y;
+      const sumR = player.radius + d.r * 0.6;
+      if (cdx * cdx + cdy * cdy < sumR * sumR && player.invuln <= 0 && !player.dead) {
+        // Burst on impact regardless of outcome.
+        this.particles.shockwave(d.x, d.y, '#ff255e', { size: 28, life: 0.55, thickness: 4 });
+        this.particles.burst(d.x, d.y, 20, '#ff255e', { speed: 1.2, life: 0.8 });
+        this.bossDebris.splice(i, 1);
+        if (player.shield > 0) {
+          player.shield -= 1;
+          player.invuln = 36;
+          player.vel.y = -8;
+          this.camera.shake(10);
+          this.screen.pulseBloom(0.4);
+        } else {
+          player.die('Crushed by debris');
+          return;
+        }
+        continue;
+      }
+      // Cull far below or expired.
+      if (d.ttl <= 0 || d.y > this.killY + 200 || d.y > player.pos.y + this.renderer.cssHeight * 1.2) {
+        this.bossDebris.splice(i, 1);
+      }
+    }
+  }
+
+  /** Render boss debris with player-camera transform applied. */
+  private drawBossDebris(): void {
+    if (this.bossDebris.length === 0) return;
+    const ctx = this.renderer.ctx;
+    ctx.save();
+    for (const d of this.bossDebris) {
+      // Outer warning halo
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const halo = ctx.createRadialGradient(d.x, d.y, 0, d.x, d.y, d.r * 2.4);
+      halo.addColorStop(0, 'rgba(255,37,94,0.55)');
+      halo.addColorStop(0.5, 'rgba(255,210,0,0.25)');
+      halo.addColorStop(1, 'rgba(255,37,94,0)');
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r * 2.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      // Spinning jagged shard body
+      ctx.save();
+      ctx.translate(d.x, d.y);
+      ctx.rotate(d.rot);
+      const grad = ctx.createRadialGradient(0, 0, 0, 0, 0, d.r);
+      grad.addColorStop(0, '#ffd200');
+      grad.addColorStop(0.5, '#ff6a00');
+      grad.addColorStop(1, '#ff255e');
+      ctx.fillStyle = grad;
+      ctx.shadowColor = '#ff255e';
+      ctx.shadowBlur = 22;
+      ctx.beginPath();
+      // Star-like silhouette: alternate inner/outer radius around 8 points.
+      const points = 7;
+      for (let p = 0; p < points * 2; p++) {
+        const a = (p / (points * 2)) * Math.PI * 2;
+        const rad = p % 2 === 0 ? d.r : d.r * 0.55;
+        const x = Math.cos(a) * rad;
+        const y = Math.sin(a) * rad;
+        if (p === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#fff7c2';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  /** Briefly show the "BOSS WAVE" banner above the canvas. */
+  private showBossBanner(altitude: number): void {
+    if (this.bossBannerEl) this.bossBannerEl.remove();
+    const el = document.createElement('div');
+    el.className = 'boss-wave-banner';
+    el.innerHTML = `BOSS WAVE<em>${altitude}M — INCOMING</em>`;
+    this.overlayRoot.appendChild(el);
+    this.bossBannerEl = el;
+    el.addEventListener('animationend', () => {
+      el.remove();
+      if (this.bossBannerEl === el) this.bossBannerEl = null;
+    }, { once: true });
+    setTimeout(() => {
+      if (el.isConnected) el.remove();
+      if (this.bossBannerEl === el) this.bossBannerEl = null;
+    }, 2000);
   }
 
   private async maybeShowAd(): Promise<void> {
@@ -2590,13 +2875,7 @@ export class Game {
     if (!adResult.rewarded && this.crazy.available) {
       this.toast.show('Ad failed — try again.');
       const fallbackCtx = this.buildLastGameOverCtx();
-      this.gameOver.open(fallbackCtx, {
-        onRetry: () => this.startMode(this.mode),
-        onMenu: () => this.openMainMenu(),
-        onRevive: () => this.requestRevive(),
-        onWatch2xAd: () => void this.watchDoubleAd(),
-        onShare: () => this.openShare(fallbackCtx),
-      });
+      this.openGameOver(fallbackCtx);
       return;
     }
     // Without an SDK present, still allow the revive as a courtesy.
@@ -2629,6 +2908,14 @@ export class Game {
    * Game Over screen on close so the player isn't dumped to a blank canvas.
    */
   private openShare(ctx: GameOverContext): void {
+    const topTricks = ctx.trickSummary
+      ? ctx.trickSummary.tricks.slice(0, 4).map((t) => ({
+          name: t.name,
+          count: t.count,
+          color: t.color,
+        }))
+      : undefined;
+    const isPersonalBest = ctx.newBestAltitude || ctx.newBestScore || ctx.newBestTime;
     const data: ShareCardData = {
       mode: ctx.mode,
       score: ctx.score,
@@ -2637,18 +2924,12 @@ export class Game {
       elapsedSeconds: ctx.elapsedSeconds,
       playerName: this.playerNameForBoard(),
       gameUrl: this.canonicalGameUrl(),
+      isPersonalBest,
       ...(this.lastDailyRank ? { dailyRank: this.lastDailyRank } : {}),
+      ...(topTricks ? { topTricks } : {}),
     };
     this.gameOver.close();
-    this.shareScreen.open(data, () => {
-      this.gameOver.open(ctx, {
-        onRetry: () => this.startMode(this.mode),
-        onMenu: () => this.openMainMenu(),
-        onRevive: () => this.requestRevive(),
-        onWatch2xAd: () => void this.watchDoubleAd(),
-        onShare: () => this.openShare(ctx),
-      });
-    });
+    this.shareScreen.open(data, () => this.openGameOver(ctx));
   }
 
   /**
@@ -2660,6 +2941,53 @@ export class Game {
     const override = import.meta.env.VITE_CANONICAL_URL as string | undefined;
     if (override && override.length > 0) return override;
     return `${window.location.origin}${window.location.pathname}`;
+  }
+
+  /**
+   * Download (and, when supported, system-share) the recorded run clip. Uses
+   * the Web Share API on mobile when files-share is available, falls back to
+   * an anchor download elsewhere.
+   */
+  private async saveClip(): Promise<void> {
+    const blob = this.recorder.finalizeNow() ?? this.recorder.getClipBlob();
+    if (!blob) {
+      this.toast.show('No clip recorded yet — try another run.');
+      return;
+    }
+    const filename = `grapple-gliders-${Date.now()}.webm`;
+    type WebShareApi = {
+      share?: (data: { title?: string; text?: string; files?: File[] }) => Promise<void>;
+      canShare?: (data: { files?: File[] }) => boolean;
+    };
+    const nav = navigator as unknown as WebShareApi;
+    if (typeof File !== 'undefined' && nav.share && nav.canShare) {
+      try {
+        const file = new File([blob], filename, { type: blob.type });
+        if (nav.canShare({ files: [file] })) {
+          await nav.share({
+            title: 'Grapple Gliders',
+            text: 'Look at this run.',
+            files: [file],
+          });
+          this.toast.show('Clip shared.');
+          return;
+        }
+      } catch (err) {
+        const e = err as { name?: string };
+        if (e.name === 'AbortError') return; // user cancelled share sheet
+        // Fall through to download.
+      }
+    }
+    // Fallback: download via anchor.
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    this.toast.show('Clip saved — post it like a trophy.');
   }
 
   private buildLastGameOverCtx(): GameOverContext {
@@ -2720,6 +3048,14 @@ export class Game {
     this.particles.clear();
     this.screen.clear();
     this.trailRenderer.reset();
+    this.sfx.stopLavaRoar();
+    this.trickCallout.clear();
+    this.recorder.stop();
+    this.recorder.discard();
+    this.bossDebris.length = 0;
+    this.bossBannerEl?.remove();
+    this.bossBannerEl = null;
+    this.bossRewardFrames = 0;
     if (this.tutorial) {
       this.tutorial.destroy();
       this.tutorial = null;

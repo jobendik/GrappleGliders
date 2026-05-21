@@ -10,20 +10,27 @@ interface WebShareApi {
 }
 
 const SHARE_TEXT = (data: ShareCardData): string => {
+  const trickBoast = data.topTricks && data.topTricks.length > 0
+    ? ` ${data.topTricks
+        .slice(0, 2)
+        .map((t) => (t.count > 1 ? `${t.name}×${t.count}` : t.name))
+        .join(' + ')}.`
+    : '';
+  const pbBadge = data.isPersonalBest ? ' ⭐ NEW PB.' : '';
   switch (data.mode) {
     case GameMode.TimeAttack:
-      return `I cleared the Time Attack in ${data.elapsedSeconds.toFixed(2)}s on Grapple Gliders. Beat that.`;
+      return `Cleared Time Attack in ${data.elapsedSeconds.toFixed(2)}s on Grapple Gliders.${pbBadge}${trickBoast} Beat that.`;
     case GameMode.DailyChallenge:
       return data.dailyRank
-        ? `Ranked #${data.dailyRank} on today's Grapple Gliders daily. Same seed for everyone — your turn.`
-        : `Scored ${data.score.toLocaleString()} on today's Grapple Gliders daily. Beat that.`;
+        ? `Ranked #${data.dailyRank} on today's Grapple Gliders daily.${pbBadge}${trickBoast} Same seed for everyone — your turn.`
+        : `Scored ${data.score.toLocaleString()} on today's Grapple Gliders daily.${pbBadge}${trickBoast} Beat that.`;
     case GameMode.ComboRun:
-      return `Hit a ×${data.peakCombo} combo in 60 seconds on Grapple Gliders. Can you keep the chain alive?`;
+      return `Hit ×${data.peakCombo} combo in 60s on Grapple Gliders.${pbBadge}${trickBoast} Can you keep the chain alive?`;
     case GameMode.BotRace:
-      return `Just beat the bots up to ${Math.floor(data.altitude)}m in Grapple Gliders.`;
+      return `Out-climbed the bots to ${Math.floor(data.altitude)}m in Grapple Gliders.${pbBadge}${trickBoast}`;
     case GameMode.EndlessClimb:
     default:
-      return `Climbed to ${Math.floor(data.altitude)}m in Grapple Gliders. Outrun the lava — try it.`;
+      return `Climbed to ${Math.floor(data.altitude)}m on Grapple Gliders.${pbBadge}${trickBoast} Outrun the lava — try it.`;
   }
 };
 
