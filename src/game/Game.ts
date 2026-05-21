@@ -2199,8 +2199,6 @@ export class Game {
         if (e.perfectAnchor) {
           this.sfx.perfectAnchor();
           this.scoring.addBonus(50);
-          // Distinct perfect-anchor chime — separates skill recognition from combo sfx.
-          this.sfx.perfectAnchor();
           // Bigger callout + sparkle ring for perfect anchors
           this.particles.shockwave(e.position.x, e.position.y, '#00ff8a', { size: 28, life: 0.7, thickness: 4 });
           this.particles.sparkle(e.position.x, e.position.y, '#00ff8a', { size: 10, life: 1.2 });
