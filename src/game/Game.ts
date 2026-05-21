@@ -169,6 +169,9 @@ export class Game {
   private modeElapsed = 0;
   /** For revive once-per-run. */
   private hasUsedRevive = false;
+  /** Tracks whether the player has already claimed the 2x-sparks rewarded ad
+   *  for the current run. Prevents stacking the bonus on repeated clicks. */
+  private hasUsed2xSparks = false;
   private lastFrameTime = performance.now();
   private rafId = 0;
   private touchControlsEl: HTMLDivElement | null = null;
@@ -249,7 +252,9 @@ export class Game {
     this.tricks.on((ev) => {
       this.trickCallout.show(ev.name, ev.color, ev.score);
       this.sfx.trick(ev.intensity);
-      this.scoring.addBonus(Math.floor(ev.score));
+      // ev.score is already multiplied by combo inside TrickSystem.emit, so
+      // use addRawBonus to avoid double-counting.
+      this.scoring.addRawBonus(Math.floor(ev.score));
       this.camera.flash(0.18 + ev.intensity * 0.15);
       this.screen.pulseBloom(0.35 + ev.intensity * 0.25);
       this.haptics.trigger('comboMilestone');
@@ -2442,6 +2447,7 @@ export class Game {
     this.modeTimer = COMBO_RUN_SECONDS;
     this.modeElapsed = 0;
     this.hasUsedRevive = false;
+    this.hasUsed2xSparks = false;
     this.dashCount = 0;
     this.hookAttachedFrames = 0;
     this.runSparks = 0;
@@ -3000,6 +3006,11 @@ export class Game {
   }
 
   private async watchDoubleAd(): Promise<void> {
+    // Guard against repeat-clicks on the rewarded-ad button: the Game Over
+    // screen stays open while the ad runs, so without this flag the player
+    // could stack the bonus indefinitely.
+    if (this.hasUsed2xSparks) return;
+    this.hasUsed2xSparks = true;
     const adResult = await this.crazy.requestAd('rewarded');
     if (adResult.rewarded || !this.crazy.available) {
       const lastRunSparks =
@@ -3009,6 +3020,9 @@ export class Game {
       this.save.data.sparks += lastRunSparks;
       this.save.save();
       this.toast.show(`+${lastRunSparks} bonus Sparks!`);
+    } else {
+      // Ad failed / declined — let them retry.
+      this.hasUsed2xSparks = false;
     }
   }
 
@@ -3130,7 +3144,10 @@ export class Game {
       },
       onRestart: () => this.startMode(this.mode),
       onExit: () => this.openMainMenu(),
-      onSettings: () =>
+      onSettings: () => {
+        // Close the pause overlay before opening Settings so the two
+        // overlays don't stack visually (both are interactive otherwise).
+        this.pauseMenu.close();
         this.settingsScreen.open(this.save, this.audio, this.music, this.toast, {
           onClose: () => {
             this.pauseMenu.open({
@@ -3145,7 +3162,8 @@ export class Game {
           },
           onTutorialReset: () => undefined,
           onNameChange: () => undefined,
-        }),
+        });
+      },
     });
   }
 

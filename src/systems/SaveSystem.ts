@@ -223,14 +223,62 @@ export class SaveSystem {
       const cloud = JSON.parse(raw) as SaveData;
       // Naive merge: cloud wins on numeric maxes, local wins on most-recent timestamps.
       const merged = this.migrate(cloud);
-      for (const k of Object.keys(merged.bestAltitude)) {
+      // Union local + cloud keys before taking the per-key max — otherwise a
+      // local-only mode key (e.g. one the player only used offline) would be
+      // dropped when `this.data = merged` assigns below.
+      const altKeys = new Set([
+        ...Object.keys(merged.bestAltitude),
+        ...Object.keys(this.data.bestAltitude),
+      ]);
+      for (const k of altKeys) {
         merged.bestAltitude[k] = Math.max(
           merged.bestAltitude[k] ?? 0,
           this.data.bestAltitude[k] ?? 0,
         );
       }
-      for (const k of Object.keys(merged.bestScore)) {
+      const scoreKeys = new Set([
+        ...Object.keys(merged.bestScore),
+        ...Object.keys(this.data.bestScore),
+      ]);
+      for (const k of scoreKeys) {
         merged.bestScore[k] = Math.max(merged.bestScore[k] ?? 0, this.data.bestScore[k] ?? 0);
+      }
+      // Also union bestTime (Time Attack per-course records) and timeAttackMedals.
+      const timeKeys = new Set([
+        ...Object.keys(merged.bestTime ?? {}),
+        ...Object.keys(this.data.bestTime ?? {}),
+      ]);
+      for (const k of timeKeys) {
+        const localT = this.data.bestTime[k];
+        const cloudT = merged.bestTime[k];
+        if (localT === undefined) {
+          if (cloudT !== undefined) merged.bestTime[k] = cloudT;
+        } else if (cloudT === undefined) {
+          merged.bestTime[k] = localT;
+        } else {
+          merged.bestTime[k] = Math.min(localT, cloudT);
+        }
+      }
+      const medalRank = { none: 0, bronze: 1, silver: 2, gold: 3 } as const;
+      const medalKeys = new Set([
+        ...Object.keys(merged.timeAttackMedals ?? {}),
+        ...Object.keys(this.data.timeAttackMedals ?? {}),
+      ]);
+      for (const k of medalKeys) {
+        const localM = this.data.timeAttackMedals[k] ?? 'none';
+        const cloudM = merged.timeAttackMedals[k] ?? 'none';
+        merged.timeAttackMedals[k] = medalRank[localM] >= medalRank[cloudM] ? localM : cloudM;
+      }
+      // Bot race wins: take the max per bot id.
+      const winKeys = new Set([
+        ...Object.keys(merged.botRaceWins ?? {}),
+        ...Object.keys(this.data.botRaceWins ?? {}),
+      ]);
+      for (const k of winKeys) {
+        merged.botRaceWins[k] = Math.max(
+          merged.botRaceWins[k] ?? 0,
+          this.data.botRaceWins[k] ?? 0,
+        );
       }
       merged.sparks = Math.max(merged.sparks, this.data.sparks);
       merged.xp = Math.max(merged.xp, this.data.xp);

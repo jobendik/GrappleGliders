@@ -81,6 +81,48 @@ describe('SaveSystem', () => {
     const sys = new SaveSystem();
     expect(sys.data.dailyStreak).toBe(5);
   });
+
+  it('cloud sync preserves local-only mode keys (no data loss on first sync)', async () => {
+    const sys = new SaveSystem();
+    // Player played some local modes before signing into cloud.
+    sys.data.bestAltitude['endless'] = 1234;
+    sys.data.bestAltitude['combo-run'] = 999;
+    sys.data.bestScore['endless'] = 5000;
+    sys.data.bestTime['timeAttack:rookie'] = 80;
+    sys.data.botRaceWins['sparky'] = 3;
+
+    // Cloud has different keys (player used another device with different modes).
+    const cloudSave = defaultSave();
+    cloudSave.bestAltitude['bot-race'] = 3000;
+    cloudSave.bestAltitude['endless'] = 1000; // lower than local
+    cloudSave.bestScore['bot-race'] = 2222;
+    cloudSave.bestTime['timeAttack:spire'] = 70;
+    cloudSave.botRaceWins['phase'] = 5;
+    cloudSave.timeAttackMedals['timeAttack:spire'] = 'silver';
+
+    const cloud = {
+      getItem: async (_k: string): Promise<string | null> =>
+        JSON.stringify(cloudSave),
+      setItem: async (_k: string, _v: string): Promise<void> => undefined,
+    };
+    sys.attachCloud(cloud);
+    // attachCloud schedules sync — wait two microtask turns for it to resolve.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Local-only keys must survive.
+    expect(sys.data.bestAltitude['combo-run']).toBe(999);
+    expect(sys.data.bestTime['timeAttack:rookie']).toBe(80);
+    expect(sys.data.botRaceWins['sparky']).toBe(3);
+    // Cloud-only keys must be picked up.
+    expect(sys.data.bestAltitude['bot-race']).toBe(3000);
+    expect(sys.data.bestScore['bot-race']).toBe(2222);
+    expect(sys.data.bestTime['timeAttack:spire']).toBe(70);
+    expect(sys.data.botRaceWins['phase']).toBe(5);
+    expect(sys.data.timeAttackMedals['timeAttack:spire']).toBe('silver');
+    // Overlapping key: local max wins for altitudes/scores.
+    expect(sys.data.bestAltitude['endless']).toBe(1234);
+  });
 });
 
 describe('ProgressionSystem', () => {

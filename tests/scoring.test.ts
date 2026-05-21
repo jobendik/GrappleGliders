@@ -34,6 +34,22 @@ describe('ScoringSystem', () => {
     expect(s.total).toBe(0);
     expect(s.combo).toBe(1);
   });
+
+  it('addRawBonus does NOT apply the combo multiplier', () => {
+    const s = new ScoringSystem();
+    s.setCombo(5);
+    s.addRawBonus(100);
+    // Raw bonus is added verbatim — combo was already baked in upstream.
+    expect(s.bonusScore).toBe(100);
+  });
+
+  it('addBonus and addRawBonus differ by combo factor', () => {
+    const s = new ScoringSystem();
+    s.setCombo(4);
+    s.addBonus(50);       // → 200
+    s.addRawBonus(50);    // → 50
+    expect(s.bonusScore).toBe(250);
+  });
 });
 
 describe('ComboSystem', () => {
