@@ -1,6 +1,6 @@
 import type { AudioEngine } from './AudioEngine';
 
-export type AudioAssetKey = 'music:above-the-steel' | 'sfx:whip';
+export type AudioAssetKey = 'music:above-the-steel';
 
 // Vite copies everything under public/ verbatim. import.meta.env.BASE_URL is
 // the configured base (`./` here), so the resolved URL stays relative to the
@@ -8,7 +8,6 @@ export type AudioAssetKey = 'music:above-the-steel' | 'sfx:whip';
 const BASE = import.meta.env.BASE_URL;
 const ASSET_URLS: Record<AudioAssetKey, string> = {
   'music:above-the-steel': `${BASE}audio/above-the-steel.mp3`,
-  'sfx:whip': `${BASE}audio/whip.mp3`,
 };
 
 export class AudioAssets {

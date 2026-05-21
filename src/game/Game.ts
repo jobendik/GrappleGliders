@@ -195,6 +195,12 @@ export class Game {
   private fireballs: { x: number; y: number; vx: number; vy: number; ttl: number; r: number }[] = [];
   /** Frames until next fireball spawn attempt. */
   private fireballCooldown = 120;
+  /** IDs of unstable obstacles already scheduled for crumble SFX. */
+  private crumbledIds = new Set<number>();
+  /** Player race rank from the previous frame — used to detect bot overtake. */
+  private prevPlayerRank = 1;
+  /** Last integer countdown second played — avoids retriggering every tick. */
+  private lastCountdownSec = -1;
 
   constructor(opts: {
     canvas: HTMLCanvasElement;
@@ -239,9 +245,8 @@ export class Game {
       this.audio.setVolume('sfx', this.save.data.settings.sfxVolume);
       this.audio.setEnabled('sfx', this.save.data.settings.sound);
       this.audio.setEnabled('music', this.save.data.settings.music);
-      // Warm up MP3 buffers in the background so the first hook fire and the
-      // first music swap don't stall on decode.
-      this.audio.assets.preload(['sfx:whip', 'music:above-the-steel']);
+      // Warm up MP3 buffers in the background so the first music swap doesn't stall.
+      this.audio.assets.preload(['music:above-the-steel']);
       if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
     });
 
@@ -254,6 +259,14 @@ export class Game {
     window.addEventListener('blur', () => {
       if (this.state === GameState.Playing && !this.paused) this.pause();
     });
+
+    // Delegated button SFX — fires for every <button> click/hover across all UI overlays.
+    document.body.addEventListener('click', (e) => {
+      if (e.target instanceof HTMLButtonElement) this.sfx.buttonClick();
+    }, true);
+    document.body.addEventListener('mouseover', (e) => {
+      if (e.target instanceof HTMLButtonElement) this.sfx.buttonHover();
+    }, true);
 
     // Achievement check for streak rewards on boot
     if (this.save.data.dailyStreak >= 7) this.achievements.unlock('streak-7', this.notifyUnlock);
@@ -405,6 +418,12 @@ export class Game {
         this.endRun('Time up');
         return;
       }
+      // Countdown tick in the final 10 seconds
+      const secs = Math.ceil(this.modeTimer);
+      if (secs <= 10 && secs > 0 && secs !== this.lastCountdownSec) {
+        this.lastCountdownSec = secs;
+        this.sfx.countdownTick();
+      }
     } else if (this.mode === GameMode.TimeAttack) {
       this.modeElapsed = this.elapsedSeconds;
       if (this.player.maxAltitude >= this.activeTimeAttackCourse.targetAltitude) {
@@ -456,6 +475,15 @@ export class Game {
 
     this.player.update(dt, playerInput, this.world, this.killY);
 
+    // Rope reel SFX
+    if (this.player.hook.state === 'attached') {
+      if (snap.pointerDown || snap.reel === -1) {
+        this.sfx.ropeReelIn();
+      } else if (snap.reel === 1) {
+        this.sfx.ropeReelOut();
+      }
+    }
+
     // Track Iron Lungs achievement
     if (this.player.hook.state === 'attached') {
       this.hookAttachedFrames += dt;
@@ -474,9 +502,21 @@ export class Game {
       }
     }
 
+    // Bot overtake detection — play tension sting when our rank worsens
+    if (this.mode === GameMode.BotRace) {
+      const myAlt = this.player.maxAltitude;
+      let myRank = 1;
+      for (const bot of this.bots) {
+        if (bot.player.maxAltitude > myAlt) myRank++;
+      }
+      if (myRank > this.prevPlayerRank) this.sfx.raceBotOvertake();
+      this.prevPlayerRank = myRank;
+    }
+
     // Combo expires
-    if (this.combo.update(dt)) {
-      // Chain expired silently.
+    const prevCombo = this.combo.combo;
+    if (this.combo.update(dt) && prevCombo >= 3) {
+      this.sfx.comboDrop();
     }
 
     // Scoring
@@ -601,6 +641,23 @@ export class Game {
 
     // Tutorial altitude notify (final step gates on this).
     this.tutorial?.notify('altitude', { altitude: this.player.maxAltitude });
+
+    // Ambient looped sounds — lava warning and wind altitude.
+    if (this.usesLava()) {
+      const distToLava = this.killY - this.player.pos.y;
+      const lavaIntensity = Math.max(0, Math.min(1, 1 - distToLava / 600));
+      this.sfx.lavaWarning(lavaIntensity);
+    }
+    const altGain = Math.max(0, Math.min(1, (this.player.maxAltitude - 200) / 2000));
+    this.sfx.windAltitude(altGain);
+
+    // Unstable platform crumble SFX — play once when timer nears removal.
+    for (const o of this.world.obstacles) {
+      if (o.kind === 'unstable' && o.unstableTriggered && o.unstableTimer >= 20 && !this.crumbledIds.has(o.id)) {
+        this.crumbledIds.add(o.id);
+        this.sfx.unstableCrumble();
+      }
+    }
 
     // Music intensity follows combo.
     if (this.save.data.settings.music) {
@@ -1968,6 +2025,7 @@ export class Game {
         this.haptics.trigger('hookConnect');
         this.tutorial?.notify('hookConnect');
         if (e.perfectAnchor) {
+          this.sfx.perfectAnchor();
           this.scoring.addBonus(50);
           // Bigger callout + sparkle ring for perfect anchors
           this.particles.shockwave(e.position.x, e.position.y, '#00ff8a', { size: 28, life: 0.7, thickness: 4 });
@@ -1975,6 +2033,7 @@ export class Game {
           this.screen.addFloatingText('PERFECT ANCHOR', e.position.x, e.position.y - 18, '#00ff8a', { size: 16, bold: true });
           this.camera.flash(0.12);
         }
+        if (e.obstacle.kind === 'unstable') this.sfx.unstableTrigger();
       },
       onHookRelease: (vel) => {
         this.combo.onHookRelease();
@@ -2111,6 +2170,7 @@ export class Game {
         this.haptics.trigger('bounce');
       },
       onShieldAbsorb: () => {
+        this.sfx.shieldAbsorb();
         this.achievements.unlock('shield-saved', this.notifyUnlock);
         if (this.player) {
           this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#00ff8a', {
@@ -2140,7 +2200,7 @@ export class Game {
             this.particles.shockwave(cx, cy, '#00ff8a', { size: 18, life: 0.6, thickness: 3 });
             this.particles.burst(cx, cy, 18, '#00ff8a', { speed: 0.8 });
             this.particles.sparkle(cx, cy, '#00ff8a', { size: 12, life: 1.2 });
-            this.sfx.unlock();
+            this.sfx.shieldPickup();
             this.haptics.trigger('unlock');
             this.screen.pulseBloom(0.3);
             this.screen.addFloatingText('SHIELD', cx, cy - 12, '#00ff8a', { size: 14, bold: true });
@@ -2150,7 +2210,7 @@ export class Game {
             this.particles.shockwave(cx, cy, '#a45cff', { size: 18, life: 0.6, thickness: 3 });
             this.particles.burst(cx, cy, 18, '#a45cff', { speed: 0.8 });
             this.particles.sparkle(cx, cy, '#a45cff', { size: 12, life: 1.2 });
-            this.sfx.unlock();
+            this.sfx.magnetPickup();
             this.haptics.trigger('unlock');
             this.screen.pulseBloom(0.3);
             this.screen.addFloatingText('MAGNET', cx, cy - 12, '#a45cff', { size: 14, bold: true });
@@ -2161,7 +2221,7 @@ export class Game {
             this.particles.shockwave(cx, cy, '#a4f0ff', { size: 22, life: 0.7, thickness: 3 });
             this.particles.burst(cx, cy, 18, '#a4f0ff', { speed: 0.8 });
             this.particles.sparkle(cx, cy, '#a4f0ff', { size: 12, life: 1.2 });
-            this.sfx.unlock();
+            this.sfx.slowPickup();
             this.haptics.trigger('unlock');
             this.screen.pulseBloom(0.3);
             this.screen.addFloatingText('SLOW LAVA', cx, cy - 12, '#a4f0ff', { size: 14, bold: true });
@@ -2193,6 +2253,9 @@ export class Game {
     this.slowLavaFrames = 0;
     this.fireballs.length = 0;
     this.fireballCooldown = 240;
+    this.crumbledIds.clear();
+    this.prevPlayerRank = 1;
+    this.lastCountdownSec = -1;
     this.ghostRecording = [];
     this.ghostPlayback =
       mode === GameMode.EndlessClimb || mode === GameMode.DailyChallenge
@@ -2239,6 +2302,8 @@ export class Game {
     this.paused = false;
     this.crazy.gameplayStart();
     if (this.save.data.settings.music) this.music.play(this.save.data.equippedTheme);
+
+    if (mode === GameMode.BotRace) this.sfx.raceStartCountdown();
 
     if (!this.save.data.settings.tutorialSeen && mode === GameMode.EndlessClimb) {
       this.startTutorial();
@@ -2305,6 +2370,10 @@ export class Game {
         this.crazy.happytime();
       }
     }
+    if (medal === 'gold') this.sfx.medalGold();
+    else if (medal === 'silver') this.sfx.medalSilver();
+    else if (medal === 'bronze') this.sfx.medalBronze();
+    else this.sfx.finishLineCross();
     this.endRun(`Cleared ${course.name} in ${time.toFixed(2)} s (${medal.toUpperCase()})`);
   }
 
@@ -2336,8 +2405,12 @@ export class Game {
     // Signal a "happy moment" to CrazyGames on a meaningful personal best
     // (prev > 0 filters out first-run noise; the platform rate-limits to once/min).
     if ((newBestAltitude && prevBestAlt > 0) || (newBestScore && prevBestScore > 0)) {
+      this.sfx.personalBest();
       this.crazy.happytime();
     }
+
+    // Finish-line cheer for race/time-attack completions
+    if (cause === 'Crossed the finish line') this.sfx.finishLineCross();
 
     // Save ghost on PB in endless/daily
     if (
@@ -2640,6 +2713,7 @@ export class Game {
   }
 
   private cleanupRun(): void {
+    this.sfx.stopLooped();
     this.hud?.destroy();
     this.hud = null;
     this.removeTouchControls();
