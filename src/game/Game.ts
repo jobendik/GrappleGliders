@@ -866,9 +866,19 @@ export class Game {
       if (this.ghostPlayback && this.save.data.settings.showGhost) {
         this.drawGhost(this.ghostPlayback);
       }
-      // Bots
+      // Bots — render body and grappling rope together so the race is
+      // readable (without bot ropes, AI players look like they teleport).
       for (const bot of this.bots) {
         this.drawPlayer(bot.player, bot.personality.color, bot.personality.color, true);
+        bot.hookRenderer.draw(
+          this.renderer.ctx,
+          bot.player.hook,
+          bot.player.pos,
+          bot.player.vel,
+          bot.hookDef,
+          this.framesSinceStart,
+          this.lowQuality,
+        );
       }
       // Player
       const skin = getSkin(this.save.data.equippedSkin);
@@ -1666,8 +1676,13 @@ export class Game {
   private drawLava(colors: [string, string]): void {
     if (!this.player) return;
     const ctx = this.renderer.ctx;
-    const w = WORLD_WIDTH;
-    const x = -w / 2;
+    // Anchor the lava to the camera so it always extends well past the
+    // viewport in both directions. Without this, a player drifting far
+    // sideways could fall to the side of the world and escape the lava.
+    const cx = this.camera.position.x;
+    const halfW = Math.max(2400, this.renderer.cssWidth * 2);
+    const x = cx - halfW;
+    const w = halfW * 2;
     const y = this.killY;
     const t = this.framesSinceStart;
     // Body of lava — vertical gradient with heat haze above.
@@ -1678,7 +1693,7 @@ export class Game {
     grad.addColorStop(0.5, colors[0]);
     grad.addColorStop(1, colors[1]);
     ctx.fillStyle = grad;
-    ctx.fillRect(x - 800, y - 80, w + 1600, 880);
+    ctx.fillRect(x, y - 80, w, 880);
 
     // Heat haze rising above — wavy gradient bands using additive blend.
     if (!this.lowQuality) {
@@ -1693,7 +1708,7 @@ export class Game {
         haze.addColorStop(0.5, withAlphaColor(colors[0], 0.14 - i * 0.025));
         haze.addColorStop(1, 'rgba(0,0,0,0)');
         ctx.fillStyle = haze;
-        ctx.fillRect(x - 800, hy - 30, w + 1600, 60);
+        ctx.fillRect(x, hy - 30, w, 60);
       }
       ctx.restore();
     }
@@ -1707,12 +1722,12 @@ export class Game {
       glow.addColorStop(0.5, withAlphaColor('#ffd200', 0.4));
       glow.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = glow;
-      ctx.fillRect(x - 800, y - 35, w + 1600, 125);
+      ctx.fillRect(x, y - 35, w, 125);
       ctx.restore();
     }
 
     // Internal magma blobs — pulsing radial gradients beneath the surface for
-    // depth. Hand-placed across width but jiggled by sin waves.
+    // depth. Distributed across the visible lava band, anchored to the camera.
     if (!this.lowQuality) {
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
@@ -1733,17 +1748,20 @@ export class Game {
     }
 
     // Wave crest — three layered sines + bright glow for a turbulent surface.
+    // Centered on the camera so the crest spans wherever the player has drifted.
     ctx.save();
     if (!this.lowQuality) {
       ctx.shadowColor = colors[0];
       ctx.shadowBlur = 20;
     }
+    const waveHalf = halfW;
+    const waveStep1 = waveHalf / 16;
     // Outermost bright thin line
     ctx.strokeStyle = '#fff7c2';
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     for (let i = -16; i <= 16; i++) {
-      const xi = i * (w / 16);
+      const xi = cx + i * waveStep1;
       const wave =
         Math.sin(t * 0.04 + i) * 5 +
         Math.sin(t * 0.09 + i * 0.7) * 3 +
@@ -1753,22 +1771,24 @@ export class Game {
     }
     ctx.stroke();
     // Middle wave line — colored
+    const waveStep2 = waveHalf / 14;
     ctx.strokeStyle = colors[0];
     ctx.lineWidth = 2.2;
     ctx.beginPath();
     for (let i = -14; i <= 14; i++) {
-      const xi = i * (w / 14);
+      const xi = cx + i * waveStep2;
       const wave = Math.sin(t * 0.04 + i) * 6 + Math.sin(t * 0.07 + i * 0.5) * 2.5;
       if (i === -14) ctx.moveTo(xi, y + wave + 3);
       else ctx.lineTo(xi, y + wave + 3);
     }
     ctx.stroke();
     // Inner dim secondary crest
+    const waveStep3 = waveHalf / 12;
     ctx.strokeStyle = withAlphaColor('#ffd200', 0.55);
     ctx.lineWidth = 1.2;
     ctx.beginPath();
     for (let i = -12; i <= 12; i++) {
-      const xi = i * (w / 12);
+      const xi = cx + i * waveStep3;
       const wave = Math.sin(t * 0.05 + i * 1.3) * 3 + Math.sin(t * 0.13 + i * 0.4) * 1.5;
       if (i === -12) ctx.moveTo(xi, y + wave + 7);
       else ctx.lineTo(xi, y + wave + 7);
@@ -2180,7 +2200,13 @@ export class Game {
         this.tutorial?.notify('dash');
       },
       onDeath: (cause) => {
-        this.lastCause = cause;
+        // Time Attack and Bot Race don't have rising lava — the kill line is
+        // a fixed abyss. Relabel the cause so the game-over screen reads right.
+        if (cause === 'Consumed by the lava' && !this.usesLava()) {
+          this.lastCause = 'Fell out of bounds';
+        } else {
+          this.lastCause = cause;
+        }
         this.sfx.death();
         this.camera.shake(22);
         this.camera.flash(0.7);
@@ -2370,10 +2396,12 @@ export class Game {
     this.raceParticipants = [];
 
     if (mode === GameMode.BotRace) {
-      const startX = -160;
+      // Spread bots out symmetrically, skipping x=0 where the player spawns.
+      const botOffsets = [-180, -90, 90];
       for (let i = 0; i < BOT_PERSONALITIES.length; i++) {
         const personality = BOT_PERSONALITIES[i]!;
-        const bot = new Bot(personality, startX + (i + 1) * 80, -120);
+        const xOff = botOffsets[i] ?? (i + 1) * 90;
+        const bot = new Bot(personality, xOff, -120);
         this.bots.push(bot);
         this.raceParticipants.push({
           id: personality.name.toLowerCase() as RaceParticipant['id'],

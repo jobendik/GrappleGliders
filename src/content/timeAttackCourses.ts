@@ -301,13 +301,29 @@ export const getCourse = (id: string): TimeAttackCourse =>
   TIME_ATTACK_COURSES.find((c) => c.id === id) ?? TIME_ATTACK_COURSES[0]!;
 
 /**
+ * Starting stepping-stones prepended to every Time Attack course. The
+ * player spawns at world y=-120 (design y=12). Without these, the first
+ * route obstacle (around design y=60-80) is far above the spawn and the
+ * player falls out of hook range before they can react. The launch pad
+ * sits BELOW the spawn (design y=8 → world y=-80) so the player lands on
+ * it, then has time to aim at the higher stepping stones.
+ */
+const STARTING_PLATFORMS: CourseSpec[] = [
+  { y: 8, kind: 'platform', x: 0, w: 360 },
+  { y: 28, kind: 'platform', x: -100, w: 160 },
+  { y: 28, kind: 'platform', x: 100, w: 160 },
+  { y: 48, kind: 'platform', x: 0, w: 200 },
+];
+
+/**
  * Build the actual Obstacle[] from a course's design data. Same factory used
  * by the in-game World, lifted here so the Time Attack builder shares it.
  */
 export const buildCourseLayout = (course: TimeAttackCourse): Obstacle[] => {
   let nextId = 100000;
   const obs: Obstacle[] = [];
-  for (const spec of course.route) {
+  const specs: CourseSpec[] = [...STARTING_PLATFORMS, ...course.route];
+  for (const spec of specs) {
     const y = -spec.y * 10;
     if (spec.kind === 'platform') {
       const width = spec.w ?? 180;

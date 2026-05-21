@@ -168,12 +168,15 @@ export class Player {
     // Near-miss + lethal checks
     this.checkObstacleInteractions(world);
 
-    // Dash recharge
+    // Dash recharge — only while the hook is attached. Forces the player to
+    // engage the grappling hook to refill dashes instead of dash-spamming up.
     if (this.dashCharges < PHYSICS.maxDashCharges) {
-      this.dashRecharge += dt;
-      if (this.dashRecharge >= PHYSICS.dashCooldownFrames) {
-        this.dashCharges += 1;
-        this.dashRecharge = 0;
+      if (this.hook.state === 'attached') {
+        this.dashRecharge += dt;
+        if (this.dashRecharge >= PHYSICS.dashCooldownFrames) {
+          this.dashCharges += 1;
+          this.dashRecharge = 0;
+        }
       }
     } else {
       this.dashRecharge = PHYSICS.dashCooldownFrames;

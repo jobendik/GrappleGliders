@@ -162,4 +162,38 @@ describe('GrapplingHook', () => {
     for (let i = 0; i < 10_000; i++) hook.reel(1, 1);
     expect(hook.ropeLength).toBeLessThanOrEqual(PHYSICS.ropeMaxLength);
   });
+
+  it('refuses to fire downward — clamps to a horizontal shot', () => {
+    // Aim straight down: should clamp to (0, -1) up shot since there's no
+    // horizontal component to preserve.
+    const a = new GrapplingHook();
+    a.shoot(new Vec2(0, 0), new Vec2(0, 200));
+    expect(a.velocity.y).toBeLessThanOrEqual(0);
+
+    // Aim down-and-right: should clamp to horizontal-right.
+    const b = new GrapplingHook();
+    b.shoot(new Vec2(0, 0), new Vec2(100, 200));
+    expect(b.velocity.y).toBeLessThanOrEqual(0);
+    expect(b.velocity.x).toBeGreaterThan(0);
+
+    // Aim down-and-left: should clamp to horizontal-left.
+    const c = new GrapplingHook();
+    c.shoot(new Vec2(0, 0), new Vec2(-100, 200));
+    expect(c.velocity.y).toBeLessThanOrEqual(0);
+    expect(c.velocity.x).toBeLessThan(0);
+  });
+
+  it('does not tunnel through thin platforms when stepping fast', () => {
+    // Hook moves 52 px/frame; a 14-thick platform sitting right in its path
+    // must be detected (regression check for the sub-step fix).
+    const hook = new GrapplingHook();
+    const thinPlatform = makeObstacle({ x: -50, y: -130, width: 100, height: 14 });
+    hook.shoot(new Vec2(0, 0), new Vec2(0, -2000));
+    let connect = null;
+    for (let i = 0; i < 60 && !connect; i++) {
+      connect = hook.step(1, new Vec2(0, 0), [thinPlatform]);
+    }
+    expect(connect).not.toBeNull();
+    expect(hook.state).toBe('attached');
+  });
 });
