@@ -1,6 +1,8 @@
 import { Vec2 } from './Physics';
 import { Player, type PlayerInputState } from './Player';
 import type { Obstacle, World } from './World';
+import { HookRenderer } from '../render/HookRenderer';
+import type { HookDef } from '../content/hooks';
 
 export interface BotPersonality {
   name: string;
@@ -29,6 +31,10 @@ interface TargetPick {
 export class Bot {
   player: Player;
   personality: BotPersonality;
+  /** Per-bot rope/hook renderer so each bot's rope animation has its own flash state. */
+  hookRenderer = new HookRenderer();
+  /** Rope definition tinted to the bot's personality color — used by hookRenderer. */
+  hookDef: HookDef;
 
   private currentTarget: TargetPick | null = null;
   private nextTarget: TargetPick | null = null;
@@ -44,6 +50,14 @@ export class Bot {
     this.player = new Player(startX, startY);
     this.player.radius = 12;
     this.lastProgressY = startY;
+    this.hookDef = {
+      id: `bot-${personality.name.toLowerCase()}`,
+      name: `${personality.name} Hook`,
+      cost: 0,
+      rope: 'cable',
+      color: personality.color,
+      width: 1.4,
+    };
   }
 
   reset(x: number, y: number): void {
