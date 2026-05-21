@@ -135,8 +135,13 @@ body::after {
 .hud-card::before { top: 6px; left: 6px; border-right: none; border-bottom: none; border-top-left-radius: 4px; }
 .hud-card::after { bottom: 6px; right: 6px; border-left: none; border-top: none; border-bottom-right-radius: 4px; }
 
-.hud-card.right { justify-self: end; min-width: 220px; }
-.hud-card.center { min-width: 220px; text-align: center; }
+/* Pin each HUD card to its grid edge so they don't stretch across the
+   full 1fr column — important on wide / ultra-wide screens where an
+   unconstrained card would balloon. */
+.hud-card:first-child { justify-self: start; min-width: 220px; max-width: 320px; }
+.hud-card.right { justify-self: end; min-width: 220px; max-width: 320px; }
+.hud-card.center { justify-self: center; min-width: 220px; max-width: 360px; text-align: center; }
+.hud-card.hidden { display: none; }
 
 .label {
   display: block;
@@ -1808,4 +1813,571 @@ kbd {
   .modal, .toast, .fade, .overlay-screen { animation: none !important; }
   .bar > i::after { display: none; }
   .modal::after { animation: none; }
+}
+
+/* ------------------------------------------------------------------- */
+/* Main Menu v2 — PLAY-first layout                                      */
+/* ------------------------------------------------------------------- */
+
+.menu-v2 {
+  width: min(720px, 96vw);
+  --menu-accent: var(--theme-accent);
+}
+
+.menu-v2 .modal-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  text-align: center;
+}
+
+.menu-title {
+  margin: 4px 0 2px;
+  font-size: clamp(32px, 6.4vw, 64px);
+  line-height: 0.95;
+}
+
+.menu-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.menu-pill {
+  position: relative;
+  border-radius: 999px;
+  padding: 9px 16px;
+  border: 1px solid rgba(234, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  box-shadow: none;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease,
+    box-shadow 200ms ease;
+}
+
+.menu-pill::before { display: none; }
+
+.menu-pill:hover,
+.menu-pill:focus-visible {
+  color: var(--white);
+  border-color: var(--pill-tint, var(--theme-accent));
+  transform: translateY(-1px);
+  box-shadow: none;
+  outline: none;
+}
+
+.menu-pill.active {
+  color: #001015;
+  background: var(--pill-tint, var(--theme-accent));
+  border-color: transparent;
+  box-shadow: 0 0 22px color-mix(in srgb, var(--pill-tint, var(--theme-accent)) 38%, transparent);
+}
+
+.menu-pill .pill-dot {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--yellow);
+  box-shadow: 0 0 8px var(--yellow);
+  animation: pill-dot-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pill-dot-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.65; }
+}
+
+.menu-context {
+  min-height: 54px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: 56ch;
+}
+
+.menu-tagline {
+  margin: 0;
+  font-size: clamp(14px, 1.6vw, 17px);
+  color: var(--white);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.menu-meta {
+  font-family: var(--display);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.menu-meta strong {
+  color: var(--menu-accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.menu-play-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0;
+}
+
+.menu-play {
+  min-width: 240px;
+  padding: 18px 48px;
+  font-size: 20px;
+  letter-spacing: 0.22em;
+  border-radius: 999px;
+}
+
+.menu-play-hint {
+  font-family: var(--ui);
+  font-size: 12px;
+  color: var(--muted-soft);
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.menu-play-hint:empty { display: none; }
+
+.menu-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--ui);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.menu-identity .name-link {
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 4px 10px;
+  font-family: var(--ui);
+  font-size: 13px;
+  color: var(--white);
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-weight: 600;
+  box-shadow: none;
+  border-radius: 999px;
+}
+
+.menu-identity .name-link::before { display: none; }
+
+.menu-identity .name-link:hover,
+.menu-identity .name-link:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(234, 255, 255, 0.18);
+  transform: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.menu-identity .name-link.needs-name {
+  color: var(--yellow);
+  border: 1px dashed color-mix(in srgb, var(--yellow) 50%, transparent);
+  background: color-mix(in srgb, var(--yellow) 6%, transparent);
+}
+
+.identity-stat {
+  font-family: var(--ui);
+  font-size: 13px;
+}
+
+.identity-stat strong {
+  color: var(--white);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.identity-sep {
+  color: rgba(234, 255, 255, 0.2);
+}
+
+.menu-icons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.icon-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 104px;
+  padding: 10px 6px;
+  border-radius: 14px;
+  border: 1px solid rgba(234, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  font-family: var(--display);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: none;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease,
+    box-shadow 200ms ease;
+}
+
+.icon-btn::before { display: none; }
+
+.icon-btn span {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.icon-btn em {
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+
+.icon-btn:hover,
+.icon-btn:focus-visible {
+  color: var(--white);
+  border-color: var(--theme-accent);
+  background: color-mix(in srgb, var(--theme-accent) 8%, transparent);
+  transform: translateY(-1px);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--theme-accent) 18%, transparent);
+  outline: none;
+}
+
+@media (max-width: 520px) {
+  .menu-v2 {
+    /* Account for the overlay's 22px padding on each side so the modal
+       never exceeds the visible viewport on narrow phones. */
+    width: min(720px, calc(100vw - 32px));
+  }
+  .menu-v2.modal { padding: 22px 18px; }
+  .menu-v2 .modal-content { gap: 14px; }
+  .menu-title { font-size: clamp(28px, 8vw, 44px); }
+  .menu-pill { padding: 7px 10px; font-size: 11px; letter-spacing: 0.1em; }
+  .menu-play { min-width: 200px; padding: 16px 36px; font-size: 18px; letter-spacing: 0.18em; }
+  /* Icon-only footer on phones — labels truncate at small widths. */
+  .icon-btn { width: 60px; padding: 10px 4px; }
+  .icon-btn em { display: none; }
+  .icon-btn span { font-size: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-pill .pill-dot { animation: none; }
+}
+
+/* ------------------------------------------------------------------- */
+/* Game Over v2 — hero metric + clear action hierarchy                   */
+/* ------------------------------------------------------------------- */
+
+.gameover-v2 {
+  width: min(680px, 96vw);
+}
+
+/* Tighter than the default modal padding — game-over has more content
+   than other modals and the action zone needs to stay above the fold. */
+.gameover-v2.modal {
+  padding: clamp(20px, 3vw, 30px);
+}
+
+.gameover-v2 .modal-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+/* Block elements inside the game-over modal need to fill the modal width
+   so the stat-grid can flow across multiple columns instead of collapsing
+   to a single-column stack (align-items: center on the parent would
+   otherwise shrink them to their intrinsic width). */
+.gameover-v2 .stat-grid,
+.gameover-v2 .race-podium,
+.gameover-v2 .unlock-progress,
+.gameover-v2 .trick-summary {
+  width: 100%;
+}
+
+/* The flex gap already spaces these blocks; the legacy block-level margins
+   would otherwise compound and push the action zone past the viewport. */
+.gameover-v2 .stat-grid,
+.gameover-v2 .race-podium,
+.gameover-v2 .unlock-progress,
+.gameover-v2 .trick-summary,
+.gameover-v2 .streak-nudge {
+  margin: 0;
+}
+
+.gameover-eyebrow {
+  display: inline-block;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
+  color: var(--theme-accent);
+  padding: 3px 10px;
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-accent) 10%, transparent);
+}
+
+.gameover-cause {
+  margin: 0;
+  font-size: clamp(13px, 1.4vw, 15px);
+  color: var(--white);
+  font-weight: 600;
+  max-width: 50ch;
+}
+
+.gameover-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 22px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 32%, transparent);
+  background:
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--theme-accent) 18%, transparent), transparent 70%),
+    rgba(0, 0, 0, 0.32);
+  min-width: 240px;
+  position: relative;
+}
+
+.gameover-hero-label {
+  font-family: var(--display);
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.gameover-hero-value {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: clamp(32px, 5.2vw, 46px);
+  line-height: 1;
+  letter-spacing: 0.02em;
+  color: var(--white);
+  font-variant-numeric: tabular-nums;
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--theme-accent) 38%, transparent));
+}
+
+.pb-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: #1a1300;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: linear-gradient(120deg, var(--yellow), #ff9d2e);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--yellow) 38%, transparent);
+}
+
+.stat-grid-compact {
+  gap: 6px;
+}
+
+.stat-grid-compact .stat {
+  padding: 7px 6px;
+}
+
+.stat-grid-compact .stat .label {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  margin-bottom: 2px;
+}
+
+.stat-grid-compact .stat .value {
+  font-size: clamp(14px, 1.6vw, 17px);
+}
+
+.gameover-rewards {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-family: var(--ui);
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.gameover-rewards strong {
+  color: var(--white);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.gameover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.gameover-retry {
+  min-width: 200px;
+  padding: 14px 36px;
+  font-size: 18px;
+  letter-spacing: 0.22em;
+  border-radius: 999px;
+}
+
+/* Rewarded-ad button — yellow accent so the player understands it's an ad,
+   not a normal action. ▶ icon prefix + small "Watch ad" subtext. */
+.ad-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-radius: 999px;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #1a1300;
+  background: linear-gradient(120deg, var(--yellow), #ff9d2e);
+  border: 1px solid transparent;
+  box-shadow:
+    0 0 26px color-mix(in srgb, var(--yellow) 32%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.32);
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 200ms ease;
+}
+
+.ad-btn::before { display: none; }
+
+.ad-btn:hover,
+.ad-btn:focus-visible {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 32px color-mix(in srgb, var(--yellow) 48%, transparent),
+    0 6px 16px rgba(0, 0, 0, 0.5);
+  outline: none;
+}
+
+.ad-btn .ad-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.18);
+  color: #1a1300;
+  font-size: 10px;
+}
+
+.ad-btn .ad-label {
+  font-size: 14px;
+}
+
+.ad-btn .ad-sub {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  opacity: 0.8;
+  margin-left: 4px;
+}
+
+.gameover-tertiary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.ghost.small {
+  padding: 8px 14px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+}
+
+.ad-ghost {
+  color: var(--yellow);
+  border-color: color-mix(in srgb, var(--yellow) 45%, transparent);
+}
+
+.ad-ghost:hover,
+.ad-ghost:focus-visible {
+  color: #1a1300;
+  background: var(--yellow);
+  border-color: transparent;
+}
+
+.ad-ghost span {
+  display: inline-block;
+  margin-right: 4px;
+  font-size: 10px;
+}
+
+.gameover-hint {
+  margin: 8px 0 0;
+  font-family: var(--ui);
+  font-size: 11px;
+  color: rgba(234, 255, 255, 0.45);
+  text-align: center;
+}
+
+.gameover-hint kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  margin: 0 2px;
+  font-family: var(--display);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--white);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(234, 255, 255, 0.2);
+  border-radius: 6px;
+}
+
+@media (max-width: 520px) {
+  .gameover-v2 { width: min(640px, calc(100vw - 32px)); }
+  .gameover-v2.modal { padding: 22px 18px; }
+  .gameover-retry { min-width: 180px; padding: 16px 32px; font-size: 18px; letter-spacing: 0.18em; }
+  .gameover-hero { min-width: 0; padding: 12px 18px 14px; }
+  .gameover-hero-value { font-size: clamp(32px, 9vw, 44px); }
+  .ad-btn { padding: 10px 14px; }
+  .ad-btn .ad-sub { display: none; }
 }

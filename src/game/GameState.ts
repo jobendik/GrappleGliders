@@ -20,6 +20,19 @@ export enum GameMode {
   BotRace = 'botRace',
 }
 
+/**
+ * Launch gate for Time Attack.
+ *
+ * Set to `false` for the CrazyGames launch — the four authored courses need
+ * more level-design iteration and playtested medal thresholds before they
+ * ship. All code paths, save fields, and content remain intact so flipping
+ * this back to `true` restores the mode without losing player progress.
+ *
+ * TODO(post-launch): polish course layouts + re-balance medal times, then
+ * flip to `true`.
+ */
+export const TIME_ATTACK_ENABLED = false;
+
 export interface ModeMeta {
   id: GameMode;
   name: string;
@@ -49,7 +62,7 @@ export const MODES: Record<GameMode, ModeMeta> = {
   [GameMode.TimeAttack]: {
     id: GameMode.TimeAttack,
     name: 'Time Attack',
-    tagline: 'Four hand-crafted courses. Three medal tiers. Beat the clock.',
+    tagline: 'Four fixed routes. Three medal tiers. Beat the clock.',
     description: 'Pick a course — Rookie, The Spire, Pendulum, or Inferno — and chase gold.',
     goal: 'Earn gold on every course.',
     iconColor: '#00ff8a',

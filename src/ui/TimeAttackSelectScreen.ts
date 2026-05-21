@@ -33,7 +33,7 @@ export class TimeAttackSelectScreen {
     modal.innerHTML = `
       <div class="modal-content">
         <h1 class="title gradient-text">Time Attack</h1>
-        <p class="subtitle">Four hand-crafted courses. Different shapes, different gold thresholds. Pick your fight.</p>
+        <p class="subtitle">Four fixed routes. Different shapes, different gold thresholds. Pick your fight.</p>
         <div class="course-grid" data-el="grid">${cards}</div>
         <div class="actions">
           <button class="ghost" data-el="close">Back</button>

@@ -4,7 +4,7 @@ A neon synthwave grappling-hook climber. Swing, dash, and outrun the rising lava
 
 > **Play now:** [jobendik.github.io/GrappleGliders](https://jobendik.github.io/GrappleGliders/)
 
-Built as a single-page TypeScript + Vite + Canvas 2D experience. No frameworks, no engines — direct DOM and a hand-tuned spring rope. Five game modes, twelve skins, eight hooks, twelve trails, six themes, thirty-plus achievements, daily challenges with deterministic seeding, ghost replays, bot races, time attack, and a 60-second combo sprint.
+Built as a single-page TypeScript + Vite + Canvas 2D experience. No frameworks, no engines — direct DOM and a hand-tuned spring rope. Four shippable game modes, twelve skins, eight hooks, twelve trails, six themes, thirty-plus achievements, daily challenges with deterministic seeding, ghost replays, bot races, and a 60-second combo sprint. (Time Attack is gated behind `TIME_ATTACK_ENABLED` in `src/game/GameState.ts` pending course polish — see [DECISIONS.md](DECISIONS.md).)
 
 ## Quick controls
 
@@ -71,9 +71,9 @@ The dev server runs on `http://localhost:5173`. Hot module replacement is wired 
 
 - **Endless Climb** — Procedural infinite tower, lava accelerates, personal best is everything.
 - **Daily Challenge** — Seeded course shared across all players each UTC day. One ranked attempt; the rest are practice.
-- **Time Attack** — Curated layout, race to altitude 5000m for Bronze / Silver / Gold medals.
 - **Combo Run** — 60-second sprint. Chain grapples within 1.5s of the previous release. Drop the chain and the run ends.
 - **Bot Race** — Three rivals named Sparky, Phase, and Apex. Beat them to altitude 3000m.
+- *Time Attack — four fixed routes (Rookie / Spire / Pendulum / Inferno). Gated behind `TIME_ATTACK_ENABLED` in `src/game/GameState.ts` for the launch — pending course polish and playtested medal thresholds.*
 
 ## Save data
 

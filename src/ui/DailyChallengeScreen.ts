@@ -34,8 +34,8 @@ export class DailyChallengeScreen {
       snapshot.yourRank !== null ? `#${snapshot.yourRank}` : todayEntry?.submitted ? '—' : 'Unranked';
     const realCount = snapshot.realPlayerCount;
     const disclaimer = snapshot.hasRealSubmissions
-      ? `Showing ${realCount} real player${realCount === 1 ? '' : 's'} (cross-device via cloud save) blended with deterministic bots until the global backend lands.`
-      : `Daily ladder uses deterministic bots seeded from today's challenge. Your runs land beside them and sync across your devices via cloud save.`;
+      ? `${realCount} real player${realCount === 1 ? '' : 's'} + seeded bots. Same seed worldwide.`
+      : `Seeded bots until the global ladder is live. Your runs sync across devices.`;
     modal.innerHTML = `
       <div class="modal-content">
         <h1 class="title gradient-text" style="font-size:clamp(28px,5vw,52px)">Daily Challenge</h1>

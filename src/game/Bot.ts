@@ -168,34 +168,47 @@ export class Bot {
       input.reel = 1;
     }
 
-    // Swing pumping: strafe in the direction of motion to build energy.
-    // Skilled bots pump strongly; rookies don't pump at all.
-    if (this.personality.skill > 0.5 && Math.abs(this.player.vel.x) > 1) {
+    // Swing pumping. The previous version gated pumping behind `skill > 0.5`
+    // AND `|vel.x| > 1`, which meant low-skill bots never pumped at all and
+    // high-skill bots couldn't kick off a swing from rest — they hung at the
+    // anchor's equilibrium point with zero velocity, never building enough
+    // upward energy to satisfy the release condition. Result: dead-hang for
+    // 4 seconds until the anti-deadlock fired, then drop and re-attach to the
+    // same anchor in an endless loop.
+    //
+    // Now: every bot pumps. With existing horizontal motion we pump WITH the
+    // velocity (classic pump-up). From rest, we bias toward the next target
+    // if known, otherwise pick a stable initial direction so the bot at least
+    // starts swinging.
+    if (Math.abs(this.player.vel.x) > 0.6) {
       input.moveX = this.player.vel.x > 0 ? 1 : -1;
+    } else if (this.nextTarget) {
+      input.moveX = this.nextTarget.aim.x > pos.x ? 1 : -1;
+    } else {
+      // Pump away from the rope so the pendulum starts opening.
+      const ropeDx = pos.x - hookPos.x;
+      input.moveX = ropeDx >= 0 ? 1 : -1;
     }
 
     // Release decision. Wait for actual upward energy before letting go.
     const speed = Math.hypot(this.player.vel.x, this.player.vel.y);
-    const sufficientLift = this.player.vel.y < -7;
-    const minAttachedFrames = 14 + (1 - this.personality.skill) * 24;
+    // Thresholds scaled by skill: high-skill bots wait for cleaner releases,
+    // low-skill bots release at any upward velocity. Even Apex (skill 1) gets
+    // a forgiving lower bound so it doesn't hang waiting for "perfect" energy
+    // that the pendulum from rest can't realistically build.
+    const liftThreshold = -3 - this.personality.skill * 2; // skill 0 → -3, skill 1 → -5
+    const speedThreshold = 4 + this.personality.skill * 2.5; // skill 0 → 4, skill 1 → 6.5
+    const sufficientLift = this.player.vel.y < liftThreshold;
+    const minAttachedFrames = 10 + (1 - this.personality.skill) * 16;
     const cooldownOk = frame - this.lastReleaseFrame > 16;
-    const energyReady = speed > 9 && sufficientLift;
+    const energyReady = speed > speedThreshold && sufficientLift;
 
     let shouldRelease = energyReady && this.framesAttached >= minAttachedFrames && cooldownOk;
 
-    // Skilled bots also check that current velocity points roughly toward the next target.
-    if (shouldRelease && this.personality.skill > 0.6 && this.nextTarget) {
-      const tx = this.nextTarget.aim.x - pos.x;
-      const ty = this.nextTarget.aim.y - pos.y;
-      const tlen = Math.hypot(tx, ty);
-      if (tlen > 1 && speed > 1) {
-        const dot = (this.player.vel.x * tx + this.player.vel.y * ty) / (tlen * speed);
-        if (dot < 0.15) shouldRelease = false; // not aimed yet — keep swinging
-      }
-    }
-
-    // Anti-deadlock: even Sparky bails after 4s on the same hook.
-    if (!shouldRelease && this.framesAttached > 240 && cooldownOk) {
+    // Anti-deadlock: bail after ~1s on the same hook. Even at sub-optimal
+    // velocity, releasing and re-aiming progresses faster than hanging on a
+    // pendulum that's never going to satisfy the release condition.
+    if (!shouldRelease && this.framesAttached > 60 && cooldownOk) {
       shouldRelease = true;
     }
 

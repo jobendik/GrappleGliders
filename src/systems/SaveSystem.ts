@@ -208,8 +208,10 @@ export class SaveSystem {
       console.warn('Save write failed.', err);
     }
     if (this.cloud?.setItem) {
-      void this.cloud
-        .setItem(SAVE_KEY, JSON.stringify(this.data))
+      // Defensive: a non-conforming cloud adapter could return undefined
+      // (we've seen it happen with stub/dev implementations of setItem).
+      // Wrap with Promise.resolve so .then never crashes the run.
+      void Promise.resolve(this.cloud.setItem(SAVE_KEY, JSON.stringify(this.data)))
         .then(() => this.onCloudSync?.())
         .catch(() => undefined);
     }

@@ -12,7 +12,7 @@ Drop-in copy + asset map for the CrazyGames developer portal submission.
 
 ## Long description
 
-> Grapple Gliders is a neon-synthwave climber built around a hand-tuned spring grappling hook. Fire, swing, fling, and dash through a procedural skyline while the lava chases you up the tower. Five modes give the swing physics room to breathe — go forever in **Endless Climb**, chase gold on four hand-crafted courses in **Time Attack** (Rookie, The Spire, Pendulum, Inferno), beat three rivals in **Bot Race**, sprint a combo-only minute in **Combo Run**, or settle the day on a seeded **Daily Challenge** that's identical for every player on Earth.
+> Grapple Gliders is a neon-synthwave climber built around a hand-tuned spring grappling hook. Fire, swing, fling, and dash through a procedural skyline while the lava chases you up the tower. Four modes give the swing physics room to breathe — go forever in **Endless Climb**, beat three rivals in **Bot Race**, sprint a combo-only minute in **Combo Run**, or settle the day on a seeded **Daily Challenge** that's identical for every player on Earth.
 >
 > Earn Sparks from runs and achievements, then spend them on 12 skins, 8 hooks, 12 trails, and 6 themes — all cosmetic, no pay-to-win. Cloud save mirrors progress across devices. Ghost replays haunt your personal best line. Daily streaks reward you for coming back tomorrow.
 >

@@ -31,6 +31,7 @@ export class HUD {
     scoreBest: HTMLDivElement;
     dashDots: HTMLDivElement;
     dashFill: HTMLElement;
+    centerCard: HTMLDivElement;
     centerLabel: HTMLDivElement;
     centerValue: HTMLDivElement;
     centerBarFill: HTMLElement;
@@ -93,6 +94,7 @@ export class HUD {
       scoreBest: container.querySelector('[data-el="scoreBest"]')!,
       dashDots,
       dashFill: container.querySelector('[data-el="dashFill"]')!,
+      centerCard: container.querySelector('.hud-card.center')!,
       centerLabel: container.querySelector('[data-el="centerLabel"]')!,
       centerValue: container.querySelector('[data-el="centerValue"]')!,
       centerBarFill: container.querySelector('[data-el="centerBarFill"]')!,
@@ -150,15 +152,20 @@ export class HUD {
     }
     this.lastCombo = ctx.combo.combo;
 
+    // The center card holds a mode-specific objective: a count-down timer
+    // (Time Attack, Combo Run) or a progress % (Bot Race). In Endless Climb
+    // there is no objective metric, and showing Altitude here just duplicated
+    // the left card — so hide the card entirely instead.
     if (typeof ctx.modeTimer === 'number') {
+      this.el.centerCard.classList.remove('hidden');
       this.el.centerLabel.textContent = ctx.modeTimerLabel ?? 'Time';
       this.el.centerValue.textContent = formatTime(ctx.modeTimer);
     } else if (typeof ctx.modeProgress === 'number') {
+      this.el.centerCard.classList.remove('hidden');
       this.el.centerLabel.textContent = ctx.modeProgressLabel ?? 'Progress';
       this.el.centerValue.textContent = `${Math.floor(ctx.modeProgress * 100)}%`;
     } else {
-      this.el.centerLabel.textContent = 'Altitude';
-      this.el.centerValue.textContent = formatAltitude(this.displayedAltitude);
+      this.el.centerCard.classList.add('hidden');
     }
 
     if (typeof ctx.modeProgress === 'number') {

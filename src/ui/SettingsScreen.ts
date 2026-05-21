@@ -64,13 +64,17 @@ export class SettingsScreen {
         <h3 class="section">Gameplay</h3>
         <div class="stat-grid" data-el="toggles"></div>
 
-        <div class="actions">
-          <button class="ghost" data-el="export">Export Save</button>
-          <button class="ghost" data-el="import">Import Save</button>
-          <button class="ghost" data-el="reset">Reset Tutorial</button>
-          <button class="ghost" data-el="back">Back</button>
+        <h3 class="section">Data</h3>
+        <div class="actions" style="justify-content:flex-start">
+          <button class="ghost small" data-el="export">Export Save</button>
+          <button class="ghost small" data-el="import">Import Save</button>
+          <button class="ghost small" data-el="reset">Reset Tutorial</button>
         </div>
-        <p class="subtitle" style="font-size:11px;margin-top:18px;color:rgba(234,255,255,0.45)">v1.0.0 · Built with TypeScript + Vite · Canvas 2D · No tracking</p>
+
+        <div class="actions" style="justify-content:flex-end;margin-top:8px">
+          <button class="primary" data-el="back">Back</button>
+        </div>
+        <p class="subtitle" style="font-size:11px;margin-top:14px;color:rgba(234,255,255,0.45)">v1.0.0 · Built with TypeScript + Vite · Canvas 2D · No tracking</p>
       </div>
     `;
     overlay.appendChild(modal);

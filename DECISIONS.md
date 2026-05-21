@@ -75,3 +75,13 @@ The four-message timed tutorial was rebuilt around a step machine that advances 
 ## 17. Time Attack uses a hand-crafted course
 
 `buildTimeAttackLayout()` no longer projects a sine wave with periodic energy nodes. The course is now a hand-tuned route divided into four narrative acts (tutorial corridor → pendulum bowls → S-bend gauntlet → final ascent), with energy nodes placed to reward specific swing arcs, spike clusters at risk pinch points, and three medal pickups (shield, slow lava, sparks) scattered to break up the climb. Layout is data-only — to retune the course, edit the `route` array at the top of the function.
+
+## 18. Gate Time Attack behind a feature flag for the CrazyGames launch
+
+Playtesting before submission found that the four Time Attack courses (Rookie, Spire, Pendulum, Inferno) felt sparse in practice — long stretches of energy-node-only climbing read as "empty" to fresh eyes, and the medal thresholds were never validated against real playtest times. Shipping a half-finished mode would have made the menu's "Four routes" line read as a broken promise.
+
+The decision: gate the mode behind `TIME_ATTACK_ENABLED` (defaulted to `false`) in `src/game/GameState.ts` rather than delete it. `MainMenu` filters the Time Attack pill out of `PILL_ORDER` when the flag is off. Course content, the `TimeAttackSelectScreen`, the `GameMode.TimeAttack` enum value, and all save fields (`bestTime`, `timeAttackMedals`) remain intact, so flipping the flag back to `true` post-launch re-enables the mode without migration or data loss.
+
+When the courses are re-authored with more platform geometry between the energy nodes and the gold thresholds are playtested into a believable range, flip the flag and add a release note. Until then, the launch ships four modes: Endless, Daily, Combo, Bot Race.
+
+The "hand-crafted" marketing claim in mode taglines and `STORE_LISTING.md` was also dropped — even when re-enabled, "four fixed routes" is the honest description until the courses earn the stronger word.
