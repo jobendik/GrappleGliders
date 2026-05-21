@@ -1,4 +1,5 @@
 import { TIME_ATTACK_COURSES, type TimeAttackCourse } from '../content/timeAttackCourses';
+import { getTheme } from '../content/themes';
 import type { SaveSystem } from '../systems/SaveSystem';
 
 const MEDAL_EMOJI: Record<'gold' | 'silver' | 'bronze' | 'none', string> = {
@@ -62,6 +63,7 @@ export class TimeAttackSelectScreen {
     const medal = save.data.timeAttackMedals[key] ?? 'none';
     const best = save.data.bestTime[key];
     const bestLabel = best !== undefined ? `${best.toFixed(2)} s` : '—';
+    const theme = getTheme(course.themeId);
     return `
       <button class="course-card medal-${medal}" data-course="${course.id}" style="--course-accent:${course.accent}">
         <div class="course-head">
@@ -71,6 +73,7 @@ export class TimeAttackSelectScreen {
         <p class="course-blurb">${course.blurb}</p>
         <dl class="course-stats">
           <dt>Target</dt><dd>${course.targetAltitude.toLocaleString('en-US')} m</dd>
+          <dt>Theme</dt><dd>${theme.name}</dd>
           <dt>Gold</dt><dd>${course.medals.gold.toFixed(0)} s</dd>
           <dt>Silver</dt><dd>${course.medals.silver.toFixed(0)} s</dd>
           <dt>Bronze</dt><dd>${course.medals.bronze.toFixed(0)} s</dd>
