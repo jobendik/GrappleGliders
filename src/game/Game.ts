@@ -177,6 +177,15 @@ export class Game {
   baseLavaSpeed = 0.94;
   lavaAcceleration = 0.0008;
   framesSinceStart = 0;
+  /**
+   * Standalone elapsed-frames counter used to gate the lava-acceleration
+   * "delay" (default 600 frames, 1200 in Easy Mode). Distinct from
+   * `framesSinceStart` because it's paused during the tutorial flow, so
+   * when the player graduates the delay restarts from scratch instead of
+   * firing instantly off accumulated time. Reset to 0 at the top of each
+   * fresh run via the `framesSinceStart <= dt` guard in updatePlay.
+   */
+  lavaAccelFrames = 0;
   elapsedSeconds = 0;
   paused = false;
 
@@ -622,16 +631,19 @@ export class Game {
       const accelRate = this.save.data.settings.easyMode
         ? this.lavaAcceleration * 0.5
         : this.lavaAcceleration;
-      const gameWithLavaAccelTimer = this as Game & { lavaAccelFrames?: number };
+      // Reset the post-tutorial accelerator on the very first frame so
+      // a fresh run doesn't inherit residue from the previous one.
       if (this.framesSinceStart <= dt) {
-        gameWithLavaAccelTimer.lavaAccelFrames = 0;
+        this.lavaAccelFrames = 0;
       }
       if (this.inTutorialFlow) {
-        gameWithLavaAccelTimer.lavaAccelFrames = 0;
+        // Hold the accelerator at zero while the player is still learning
+        // the controls — when they graduate, the 20-second delay restarts
+        // from scratch rather than firing instantly off accumulated time.
+        this.lavaAccelFrames = 0;
       } else {
-        gameWithLavaAccelTimer.lavaAccelFrames =
-          (gameWithLavaAccelTimer.lavaAccelFrames ?? 0) + dt;
-        if (gameWithLavaAccelTimer.lavaAccelFrames > accelDelay) {
+        this.lavaAccelFrames += dt;
+        if (this.lavaAccelFrames > accelDelay) {
           this.lavaSpeed += accelRate * dt;
         }
       }
