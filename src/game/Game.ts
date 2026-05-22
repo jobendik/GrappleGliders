@@ -72,6 +72,25 @@ const COMBO_RUN_SECONDS = 60;
 /** Save-data sub-key for per-course Time Attack records. */
 const timeAttackKey = (courseId: string): string => `${GameMode.TimeAttack}:${courseId}`;
 
+/** Boot-lifecycle diagnostic logs. Mirrors the [CrazySDK] tag so the SDK
+ *  events and the surrounding game lifecycle interleave readably in DevTools.
+ *  Gated on Vite DEV or `?devCrazySDK=1`. */
+const bootLog = ((): ((msg: string) => void) => {
+  let enabled = false;
+  try {
+    enabled = !!import.meta.env?.DEV;
+    if (!enabled) {
+      const params = new URLSearchParams(window.location.search);
+      enabled = params.get('devCrazySDK') === '1';
+    }
+  } catch {
+    enabled = false;
+  }
+  return enabled
+    ? (msg: string) => console.warn(`[Boot] ${msg}`)
+    : (_msg: string) => undefined;
+})();
+
 interface GhostFrame {
   px: number;
   py: number;
@@ -353,11 +372,20 @@ export class Game {
   }
 
   private bootPlatform(): void {
-    // Open the menu and start the render loop immediately. The CrazyGames SDK
-    // can take 10s to settle into its "disabled" state when this is not the
-    // CG portal — we don't want anything on the boot path waiting on it.
+    // CrazyGames lifecycle: bracket the boot/preload with loadingStart →
+    // loadingStop. The wrapper queues these until init() resolves so they
+    // appear in the SDK log in the correct order. We then open the menu
+    // (which is the first interactive state — NOT gameplay) and let the
+    // player click Play to fire gameplayStart.
+    //
+    // The menu must open synchronously so the player doesn't wait on the
+    // iframe handshake (up to 15s on the CG portal). The cloud adapter and
+    // username are attached in the background; either may fail without
+    // blocking the menu.
+    this.crazy.loadingStart();
     this.openMainMenu();
     this.startLoop();
+    this.crazy.loadingStop();
 
     void (async () => {
       await this.crazy.init();
@@ -380,7 +408,6 @@ export class Game {
           this.save.data.playerNameSet = true;
           this.save.save();
           this.toast.show(`Signed in as ${this.save.data.playerName}.`);
-          // If the main menu is open, refresh it so the new name shows.
           if (this.state === GameState.MainMenu) this.openMainMenu();
         }
       }
@@ -2245,8 +2272,10 @@ export class Game {
   openMainMenu(): void {
     this.cleanupRun();
     this.state = GameState.MainMenu;
+    bootLog('menu ready');
     this.mainMenu.open(this.save, this.daily, {
       onPlay: (mode) => {
+        bootLog(`match start requested (${mode})`);
         if (mode === GameMode.TimeAttack) {
           this.openTimeAttackSelect();
         } else {
@@ -2697,6 +2726,7 @@ export class Game {
     this.state = GameState.Playing;
     this.paused = false;
     this.crazy.gameplayStart();
+    bootLog(`match started (${mode})`);
     // Music should follow the active theme: Time Attack overrides with the
     // course theme, every other mode uses the equipped theme.
     if (this.save.data.settings.music) {
