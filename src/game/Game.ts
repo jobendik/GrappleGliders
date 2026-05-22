@@ -622,8 +622,18 @@ export class Game {
       const accelRate = this.save.data.settings.easyMode
         ? this.lavaAcceleration * 0.5
         : this.lavaAcceleration;
-      if (this.framesSinceStart > accelDelay && !this.inTutorialFlow) {
-        this.lavaSpeed += accelRate * dt;
+      const gameWithLavaAccelTimer = this as Game & { lavaAccelFrames?: number };
+      if (this.framesSinceStart <= dt) {
+        gameWithLavaAccelTimer.lavaAccelFrames = 0;
+      }
+      if (this.inTutorialFlow) {
+        gameWithLavaAccelTimer.lavaAccelFrames = 0;
+      } else {
+        gameWithLavaAccelTimer.lavaAccelFrames =
+          (gameWithLavaAccelTimer.lavaAccelFrames ?? 0) + dt;
+        if (gameWithLavaAccelTimer.lavaAccelFrames > accelDelay) {
+          this.lavaSpeed += accelRate * dt;
+        }
       }
     }
 
