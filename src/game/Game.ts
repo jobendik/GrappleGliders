@@ -3718,7 +3718,7 @@ export class Game {
    */
   private findAimSnap(worldPointer: Vec2): { x: number; y: number; obstacle: import('./World').Obstacle } | null {
     if (!this.world || !this.player) return null;
-    if (!this.save.data.settings.aimAssist) return null;
+    if (!this.save.data.settings.aimAssist && !this.save.data.settings.easyMode) return null;
     const isTouch = this.input.isTouch;
     // Easy Mode: enormous snap radius — clicking anywhere upward grapples
     // the best available platform. This is the single biggest casual-mode
