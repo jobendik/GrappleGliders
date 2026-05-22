@@ -46,6 +46,17 @@ export class MainMenu {
     this.close();
     const isFirstRun = !save.data.settings.tutorialSeen;
     this.selectedMode = GameMode.EndlessClimb;
+    // Hero subtitle communicates the SINGLE clear goal — "climb as high
+    // as you can" — and personalizes the sub-line with the player's best
+    // so returning players see "Best: 250m · Beat it!" and have an
+    // immediate target to chase. First-time players get a one-liner
+    // explaining controls so the goal still feels reachable.
+    const bestEndless = Math.floor(save.data.bestAltitude[GameMode.EndlessClimb] ?? 0);
+    const goalSubLine = isFirstRun
+      ? 'Tap or click to grapple · release to fling.'
+      : bestEndless > 0
+        ? `Your best: <strong>${bestEndless}m</strong> — beat it!`
+        : 'Tap or click to grapple · release to fling.';
 
     const overlay = document.createElement('div');
     overlay.className = 'overlay-screen';
@@ -56,8 +67,8 @@ export class MainMenu {
       <div class="modal-content">
         <h1 class="title gradient-text menu-title">Grapple Gliders</h1>
         <div class="menu-subtitle">
-          <strong>Swing, glide, and survive.</strong>
-          <em>${isFirstRun ? 'New here? Press PLAY for a safe tutorial — no lava, no rush.' : 'Beat your best distance.'}</em>
+          <strong>Climb as high as you can.</strong>
+          <em>${goalSubLine}</em>
         </div>
 
         <div class="menu-pills" role="tablist" data-el="pills"></div>
