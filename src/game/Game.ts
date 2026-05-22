@@ -613,8 +613,17 @@ export class Game {
       // Lava accelerates over time. Suspended during the tutorial flow so
       // the lava speed remains at its slow easy-start value when the
       // tutorial completes and real gameplay begins.
-      if (this.framesSinceStart > 600 && !this.inTutorialFlow) {
-        this.lavaSpeed += this.lavaAcceleration * dt;
+      //
+      // Easy Mode doubles the acceleration delay (600 → 1200 frames =
+      // 20s instead of 10s) AND halves the rate, so the curve from
+      // "comfortable" to "intense" is much gentler — closer to a one-
+      // minute ramp than a fifteen-second one.
+      const accelDelay = this.save.data.settings.easyMode ? 1200 : 600;
+      const accelRate = this.save.data.settings.easyMode
+        ? this.lavaAcceleration * 0.5
+        : this.lavaAcceleration;
+      if (this.framesSinceStart > accelDelay && !this.inTutorialFlow) {
+        this.lavaSpeed += accelRate * dt;
       }
     }
 
@@ -724,6 +733,29 @@ export class Game {
       // the reel button. Manual reel input still takes priority in Player.update().
       autoReel: snap.isTouch,
     };
+    // Easy Mode auto-pump: while attached, if the player isn't actively
+    // steering, the game gently builds the pendulum based on where the
+    // player is relative to the anchor. This means a casual player who
+    // grapples and just holds (or doesn't touch keys at all) still feels
+    // forward momentum, instead of dead-hanging at the anchor's equilibrium
+    // point waiting to figure out the controls.
+    //
+    // Disabled during the tutorial flow so the "swing left and right"
+    // teaching step actually requires the player to press A/D — they
+    // need to learn the manual input exists before the assist takes over.
+    if (
+      this.save.data.settings.easyMode &&
+      !this.inTutorialFlow &&
+      this.player.hook.state === 'attached' &&
+      playerInput.moveX === 0
+    ) {
+      const ropeDx = this.player.pos.x - this.player.hook.position.x;
+      // Pump *away* from the rope so the pendulum opens up rather than
+      // settling. Magnitude is small (0.45) so a skilled player who DOES
+      // press A/D still feels in control — the assist is additive, not
+      // overriding.
+      playerInput.moveX = ropeDx >= 0 ? 0.45 : -0.45;
+    }
     if (dashRequested && this.player.dashCharges > 0) this.dashCount += 1;
 
     this.player.update(dt, playerInput, this.world, this.killY);
@@ -2356,6 +2388,7 @@ export class Game {
       scoring: this.scoring,
       bestAltitude: this.save.data.bestAltitude[this.mode] ?? 0,
       bestScore: this.save.data.bestScore[this.mode] ?? 0,
+      easyMode: this.save.data.settings.easyMode,
       ...(modeTimer !== undefined ? { modeTimer } : {}),
       ...(modeTimerLabel !== undefined ? { modeTimerLabel } : {}),
       ...(modeProgress !== undefined ? { modeProgress } : {}),
@@ -2819,6 +2852,13 @@ export class Game {
     this.camera.reset(this.player.pos);
     this.killY = 600;
     this.lavaSpeed = mode === GameMode.ComboRun ? 1.8 : 0.94;
+    // Easy Mode: slower lava across the board (0.5 vs 0.94 in standard
+    // modes, 1.4 vs 1.8 in Combo Run). Combined with the delayed
+    // acceleration threshold in updatePlay, this gives casual players
+    // roughly twice as much breathing room at every altitude.
+    if (this.save.data.settings.easyMode) {
+      this.lavaSpeed = mode === GameMode.ComboRun ? 1.4 : 0.5;
+    }
     // First-run Endless is the tutorial flow: lava is parked at an
     // effectively-infinite distance so the player cannot die from a
     // missed grapple or a sustained fall. The lava re-anchors close to
@@ -3670,7 +3710,14 @@ export class Game {
     if (!this.world || !this.player) return null;
     if (!this.save.data.settings.aimAssist) return null;
     const isTouch = this.input.isTouch;
-    const snapRadius = isTouch ? 90 : 18; // world-space pixels
+    // Easy Mode: enormous snap radius — clicking anywhere upward grapples
+    // the best available platform. This is the single biggest casual-mode
+    // win: it removes "I aimed slightly off, my hook missed, I died" as
+    // a failure mode entirely. The score function still prefers the
+    // platform closest to where the player clicked, so directional intent
+    // is preserved — only precision pressure is removed.
+    const easy = this.save.data.settings.easyMode;
+    const snapRadius = easy ? 1200 : isTouch ? 90 : 18; // world-space pixels
     const px = this.player.pos.x;
     const py = this.player.pos.y;
     const maxRange = PHYSICS.hookMaxRange;
@@ -3690,11 +3737,39 @@ export class Game {
       if (distFromPointer > snapRadius) continue;
       // Score: prefer obstacles close to the touch; gentle bias toward
       // those at a workable range from the player so a tap doesn't snap
-      // onto something already touching the glider.
+      // onto something already touching the glider. In easy mode we
+      // also prefer obstacles ABOVE the player so a downward click
+      // still grapples something useful.
       const rangeBias = Math.max(0, 60 - distFromPlayer) * 0.5;
-      const score = distFromPointer + rangeBias;
+      const upwardBias = easy ? Math.max(0, py - cy) * -0.04 : 0;
+      const score = distFromPointer + rangeBias + upwardBias;
       if (!best || score < best.score) {
         best = { x: cx, y: cy, obstacle: obs, score };
+      }
+    }
+    // Easy Mode fallback: even if the click was nowhere near any platform
+    // (or aimed straight down), grab the single best upward platform so
+    // every click becomes a successful grapple. Classic Mode preserves the
+    // "missed shot = no hook" failure mode for skill expression.
+    if (!best && easy) {
+      let fallback: { x: number; y: number; obstacle: import('./World').Obstacle; score: number } | null = null;
+      for (const obs of this.world.obstacles) {
+        if (!obs.grappleable) continue;
+        const cx = obs.x + obs.width / 2;
+        const cy = obs.y + obs.height / 2;
+        if (cy > py + 8) continue;
+        const distFromPlayer = Math.hypot(cx - px, cy - py);
+        if (distFromPlayer > maxRange) continue;
+        // Prefer platforms more directly above (vertical-ish) and at a
+        // reasonable range so the grapple has somewhere to go.
+        const verticality = Math.max(0, py - cy) / Math.max(40, distFromPlayer);
+        const score = -verticality * 200 + distFromPlayer * 0.1;
+        if (!fallback || score < fallback.score) {
+          fallback = { x: cx, y: cy, obstacle: obs, score };
+        }
+      }
+      if (fallback) {
+        return { x: fallback.x, y: fallback.y, obstacle: fallback.obstacle };
       }
     }
     return best ? { x: best.x, y: best.y, obstacle: best.obstacle } : null;

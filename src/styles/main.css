@@ -264,6 +264,29 @@ body::after {
 .combo-display.active { opacity: 1; }
 .combo-display.pulse { transform: translateX(-50%) scale(1.18); }
 
+/* Easy Mode badge — small chip in the bottom-right of the HUD so the
+   player always knows whether the assist is on. Hidden when Easy Mode
+   is off so Classic Mode runs feel uncluttered. */
+.easy-mode-badge {
+  position: fixed;
+  right: calc(14px + var(--safe-right));
+  bottom: calc(14px + var(--safe-bottom));
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(0, 243, 255, 0.12);
+  border: 1px solid color-mix(in srgb, var(--cyan) 60%, transparent);
+  color: var(--cyan);
+  font-family: var(--display);
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  text-shadow: 0 0 12px color-mix(in srgb, var(--cyan) 50%, transparent);
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: 0 0 16px color-mix(in srgb, var(--cyan) 24%, transparent);
+}
+
 /* ------------------------------------------------------------------- */
 /* Toasts                                                               */
 /* ------------------------------------------------------------------- */
@@ -2028,6 +2051,76 @@ kbd {
 }
 
 .menu-play-hint:empty { display: none; }
+
+/* Easy / Classic difficulty toggle. The default-on Easy mode is the
+   single biggest CrazyGames-friendly change — auto-aim + slower lava.
+   The pills sit directly under the PLAY button so a casual reviewer
+   immediately sees that there's an assist available and a classic mode
+   for skilled players. */
+.menu-difficulty {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.diff-pill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(234, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--muted);
+  font-family: var(--display);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  box-shadow: none;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease,
+    box-shadow 200ms ease;
+}
+
+.diff-pill::before { display: none; }
+
+.diff-pill .diff-name {
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+}
+
+.diff-pill .diff-sub {
+  font-family: var(--ui);
+  font-style: normal;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: var(--muted-soft);
+}
+
+.diff-pill:hover,
+.diff-pill:focus-visible {
+  color: var(--white);
+  border-color: var(--theme-accent);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.diff-pill.active {
+  color: #001015;
+  background: var(--theme-accent);
+  border-color: transparent;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--theme-accent) 32%, transparent);
+}
+
+.diff-pill.active .diff-sub {
+  color: rgba(0, 16, 21, 0.7);
+}
 
 .menu-identity {
   display: flex;

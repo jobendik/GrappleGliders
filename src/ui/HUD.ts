@@ -17,6 +17,8 @@ export interface HUDContext {
   modeProgress?: number;
   modeProgressLabel?: string;
   raceStatus?: string;
+  /** Show "EASY" badge near the score card while easy mode is active. */
+  easyMode?: boolean;
 }
 
 const DASH_DOT_COUNT = PHYSICS.maxDashCharges;
@@ -37,6 +39,7 @@ export class HUD {
     centerBarFill: HTMLElement;
     centerStatus: HTMLDivElement;
     combo: HTMLDivElement;
+    easyBadge: HTMLDivElement;
   };
   /** Smoothed counter values so digits roll up instead of snapping. */
   private displayedAltitude = 0;
@@ -79,6 +82,15 @@ export class HUD {
     combo.textContent = '×1';
     document.body.appendChild(combo);
 
+    // EASY badge — small corner indicator so the player always knows whether
+    // they're playing the assisted mode or Classic. Hidden by default; the
+    // Game flips visibility based on settings.easyMode via update().
+    const easyBadge = document.createElement('div');
+    easyBadge.className = 'easy-mode-badge';
+    easyBadge.textContent = 'EASY';
+    easyBadge.style.display = 'none';
+    document.body.appendChild(easyBadge);
+
     const dashDots = container.querySelector<HTMLDivElement>('[data-el="dashDots"]')!;
     for (let i = 0; i < DASH_DOT_COUNT; i++) {
       const dot = document.createElement('span');
@@ -100,10 +112,16 @@ export class HUD {
       centerBarFill: container.querySelector('[data-el="centerBarFill"]')!,
       centerStatus: container.querySelector('[data-el="centerStatus"]')!,
       combo,
+      easyBadge,
     };
   }
 
   update(ctx: HUDContext): void {
+    // Easy badge visibility — flip whenever the setting changes mid-run.
+    const showEasy = ctx.easyMode === true;
+    if (this.el.easyBadge.style.display !== (showEasy ? 'block' : 'none')) {
+      this.el.easyBadge.style.display = showEasy ? 'block' : 'none';
+    }
     // Smoothly chase the target altitude/score so digits roll instead of snap.
     const altTarget = ctx.player.maxAltitude;
     const scoreTarget = ctx.scoring.total;
@@ -184,5 +202,6 @@ export class HUD {
   destroy(): void {
     this.el.container.remove();
     this.el.combo.remove();
+    this.el.easyBadge.remove();
   }
 }

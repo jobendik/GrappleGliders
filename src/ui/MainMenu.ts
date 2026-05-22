@@ -70,6 +70,16 @@ export class MainMenu {
         <div class="menu-play-wrap">
           <button class="primary large menu-play" data-el="play">PLAY</button>
           <div class="menu-play-hint" data-el="hint"></div>
+          <div class="menu-difficulty" data-el="difficulty">
+            <button class="diff-pill ${save.data.settings.easyMode ? 'active' : ''}" data-el="diff-easy" aria-pressed="${save.data.settings.easyMode}">
+              <span class="diff-name">Easy</span>
+              <em class="diff-sub">Auto-aim · slow lava</em>
+            </button>
+            <button class="diff-pill ${!save.data.settings.easyMode ? 'active' : ''}" data-el="diff-classic" aria-pressed="${!save.data.settings.easyMode}">
+              <span class="diff-name">Classic</span>
+              <em class="diff-sub">Full skill</em>
+            </button>
+          </div>
         </div>
 
         <div class="menu-identity" data-el="identity"></div>
@@ -118,6 +128,30 @@ export class MainMenu {
     modal
       .querySelector('[data-el="name"]')
       ?.addEventListener('click', () => cb.onSetName?.());
+
+    // Easy / Classic difficulty toggle. The default-on Easy mode is the
+    // single biggest CrazyGames-friendly change: clicking anywhere upward
+    // auto-grapples the best platform. Classic preserves the original
+    // skill-heavy experience. Toggle persists in save.
+    const diffEasy = modal.querySelector<HTMLButtonElement>('[data-el="diff-easy"]')!;
+    const diffClassic = modal.querySelector<HTMLButtonElement>('[data-el="diff-classic"]')!;
+    const refreshDifficulty = (): void => {
+      const easy = save.data.settings.easyMode;
+      diffEasy.classList.toggle('active', easy);
+      diffClassic.classList.toggle('active', !easy);
+      diffEasy.setAttribute('aria-pressed', String(easy));
+      diffClassic.setAttribute('aria-pressed', String(!easy));
+    };
+    diffEasy.addEventListener('click', () => {
+      save.data.settings.easyMode = true;
+      save.save();
+      refreshDifficulty();
+    });
+    diffClassic.addEventListener('click', () => {
+      save.data.settings.easyMode = false;
+      save.save();
+      refreshDifficulty();
+    });
 
     this.refreshSelection(modal, save, daily);
 

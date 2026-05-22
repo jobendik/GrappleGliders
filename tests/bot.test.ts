@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Bot, BOT_PERSONALITIES } from '../src/game/Bot';
 import { World, type Obstacle } from '../src/game/World';
+import { SeededRandom } from '../src/utils/seededRandom';
 
 const sparky = BOT_PERSONALITIES[0]!;
 const apex = BOT_PERSONALITIES[2]!;
@@ -78,28 +79,36 @@ describe('Bot AI', () => {
   });
 
   it('rookie bots reach lower peak velocities than skilled ones over a fixed window', () => {
-    const seed = 1;
-    const layout: Obstacle[] = [];
-    for (let i = 0; i < 10; i++) {
-      layout.push(makePlatform(((i % 2) * 80) - 40, -200 - i * 220));
+    // Bot.update() calls Math.random() three times per tick (pump decision,
+    // dash gate, aim jitter). With the unseeded global Math.random, both
+    // bots drew from the same shared sequence and Sparky sometimes got a
+    // luckier pump rhythm than Apex, failing the skill-based assertion.
+    // Seed Math.random with a deterministic PRNG so the comparison reflects
+    // bot personality coefficients, not RNG variance.
+    const rng = new SeededRandom(1);
+    const randomSpy = vi.spyOn(Math, 'random').mockImplementation(() => rng.next());
+    try {
+      const layout: Obstacle[] = [];
+      for (let i = 0; i < 10; i++) {
+        layout.push(makePlatform(((i % 2) * 80) - 40, -200 - i * 220));
+      }
+      const sparkyBot = new Bot(sparky, 0, 0);
+      const apexBot = new Bot(apex, 0, 0);
+      const sparkyWorld = buildSparseWorld(layout.map((o) => ({ ...o })));
+      const apexWorld = buildSparseWorld(layout.map((o) => ({ ...o })));
+      let sparkyPeak = 0;
+      let apexPeak = 0;
+      for (let i = 0; i < 600; i++) {
+        sparkyBot.update(1, sparkyWorld, 10000, i);
+        apexBot.update(1, apexWorld, 10000, i);
+        sparkyPeak = Math.max(sparkyPeak, sparkyBot.player.maxAltitude);
+        apexPeak = Math.max(apexPeak, apexBot.player.maxAltitude);
+      }
+      expect(apexPeak).toBeGreaterThan(0);
+      expect(apexPeak).toBeGreaterThan(sparkyPeak * 0.9);
+    } finally {
+      randomSpy.mockRestore();
     }
-    const sparkyBot = new Bot(sparky, 0, 0);
-    const apexBot = new Bot(apex, 0, 0);
-    const sparkyWorld = buildSparseWorld(layout.map((o) => ({ ...o })));
-    const apexWorld = buildSparseWorld(layout.map((o) => ({ ...o })));
-    let sparkyPeak = 0;
-    let apexPeak = 0;
-    for (let i = 0; i < 600; i++) {
-      sparkyBot.update(1, sparkyWorld, 10000, i);
-      apexBot.update(1, apexWorld, 10000, i);
-      sparkyPeak = Math.max(sparkyPeak, sparkyBot.player.maxAltitude);
-      apexPeak = Math.max(apexPeak, apexBot.player.maxAltitude);
-    }
-    // Apex climbs higher than Sparky in the same window. Both should make some progress.
-    expect(apexPeak).toBeGreaterThan(0);
-    expect(apexPeak).toBeGreaterThan(sparkyPeak * 0.9);
-    // sanity: seed unused but referenced so the test name remains meaningful
-    expect(seed).toBe(1);
   });
 
   it('drops a stale target whose obstacle was collected or collapsed', () => {
