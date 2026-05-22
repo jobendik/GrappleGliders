@@ -46,6 +46,7 @@ import { UnlocksScreen } from '../ui/UnlocksScreen';
 import { SettingsScreen } from '../ui/SettingsScreen';
 import { DailyChallengeScreen } from '../ui/DailyChallengeScreen';
 import { Tutorial } from '../ui/Tutorial';
+import { ReadyOverlay } from '../ui/ReadyOverlay';
 import { ToastManager } from '../ui/Toast';
 import { TrickCalloutManager } from '../ui/TrickCallout';
 import { NamePromptScreen } from '../ui/NamePromptScreen';
@@ -160,6 +161,7 @@ export class Game {
   shareScreen: ShareScreen;
   timeAttackSelect: TimeAttackSelectScreen;
   tutorial: Tutorial | null = null;
+  readyOverlay: ReadyOverlay;
   /** Most recent daily rank (1-based) — surfaced on the share card. */
   private lastDailyRank: number | null = null;
 
@@ -190,6 +192,13 @@ export class Game {
 
   /** Stable game-over guard. */
   private gameEnded = false;
+  /**
+   * Pre-roll grace window in "frames at 60fps". While > 0, player physics
+   * and the lava kill-line are frozen so a new player can read the screen
+   * and line up their first shot without being insta-killed by gravity.
+   * Returning players get ~1s; first-time players get ~3s.
+   */
+  private introFrames = 0;
   /** For combo run mode timer. */
   private modeTimer = 0;
   /** For Time Attack speed-run timer (counts up). */
@@ -325,6 +334,7 @@ export class Game {
     this.namePrompt = new NamePromptScreen(this.overlayRoot);
     this.shareScreen = new ShareScreen(this.overlayRoot);
     this.timeAttackSelect = new TimeAttackSelectScreen(this.overlayRoot);
+    this.readyOverlay = new ReadyOverlay(this.overlayRoot);
 
     this.themes.setTheme(this.save.data.equippedTheme);
     this.background.init(this.renderer.cssWidth, this.renderer.cssHeight);
@@ -391,7 +401,25 @@ export class Game {
     // idempotent against this fallback.
     const loadingWatchdog = setTimeout(() => this.crazy.loadingStop(), 20_000);
     try {
-      this.openMainMenu();
+      // Defensive: a transient render failure here was the most plausible
+      // cause of the "skipped the menu" reviewer report. We catch, log,
+      // and retry on the next frame so the player still lands on a menu
+      // instead of an empty canvas (or worse, live gameplay).
+      try {
+        this.openMainMenu();
+      } catch (err) {
+        bootLog(`menu open failed: ${(err as Error)?.message ?? 'unknown'}`);
+        requestAnimationFrame(() => {
+          try {
+            if (this.state !== GameState.MainMenu) this.openMainMenu();
+          } catch {
+            // Last resort: surface the failure as a toast so the player at
+            // least sees a hint of what's wrong. The canvas is empty but
+            // gameplay never started, which is the correct safe state.
+            this.toast.show('Menu failed to load — please refresh.');
+          }
+        });
+      }
       this.startLoop();
     } finally {
       this.crazy.loadingStop();
@@ -513,6 +541,16 @@ export class Game {
 
   private updatePlay(dt: number, snap: ReturnType<InputManager['snapshot']>): void {
     if (!this.player || !this.world) return;
+    // Pre-roll grace window. While introFrames > 0 the player physics, lava,
+    // and mode timers are all frozen — only ambient world animation runs.
+    // This is the difference between a forgiving first impression and the
+    // original ~0.5s-to-death drop. Returning players get ~1s; first-time
+    // players get ~3s. The ReadyOverlay handles the on-screen badge.
+    if (this.introFrames > 0) {
+      this.introFrames -= dt;
+      this.world.update(dt);
+      return;
+    }
     this.framesSinceStart += dt;
     this.elapsedSeconds += dt / 60;
     this.world.update(dt);
@@ -2396,6 +2434,12 @@ export class Game {
         break;
     }
 
+    // Easy-start applies only to a first-time Endless run. Time Attack
+    // uses static layouts (its own difficulty curve), and other modes are
+    // either skill-chase (Combo, Bot Race) or daily-shared (Daily seed
+    // must stay deterministic for the leaderboard).
+    const easyStart =
+      !this.save.data.settings.tutorialSeen && mode === GameMode.EndlessClimb;
     this.world = new World({
       seed,
       worldWidth: WORLD_WIDTH,
@@ -2404,6 +2448,7 @@ export class Game {
       spawnGapMax: 240,
       finishY: null,
       staticLayout,
+      easyStart,
     });
     this.player = new Player(0, -120);
     this.player.setEvents({
@@ -2666,6 +2711,13 @@ export class Game {
     this.camera.reset(this.player.pos);
     this.killY = 600;
     this.lavaSpeed = mode === GameMode.ComboRun ? 1.8 : 0.94;
+    // First-run Endless gets a more forgiving lava setup so the player has
+    // a generous window to climb the first time. ~30% slower start speed
+    // and lava begins ~200px lower (almost a full extra screen of runway).
+    if (easyStart) {
+      this.killY = 800;
+      this.lavaSpeed = 0.66;
+    }
     this.framesSinceStart = 0;
     this.elapsedSeconds = 0;
     this.gameEnded = false;
@@ -2752,8 +2804,48 @@ export class Game {
 
     if (mode === GameMode.BotRace) this.sfx.raceStartCountdown();
 
+    // Pre-roll grace + on-screen "GET READY". Without this the original
+    // boot dumped the player into live physics — gravity from frame 0,
+    // ~0.5s until lava contact if they did nothing. CrazyGames reviewers
+    // experience exactly that scenario, and it was a major contributor to
+    // the first rejection. The grace window freezes physics & lava while
+    // the badge is visible (handled in updatePlay).
+    //
+    // BotRace already uses its own SFX-driven race-start countdown, so we
+    // skip the ready overlay for that mode to avoid a competing UI cue.
+    const isFirstRun = !this.save.data.settings.tutorialSeen;
+    const isTouch = this.input.isTouch;
+    const graceFrames = isFirstRun ? 200 : 75; // ~3.3s vs ~1.25s @ 60fps
+    this.introFrames = graceFrames;
+    // Spawn invuln carries ~0.5s past the grace so the player doesn't
+    // insta-die on the first frame physics resume.
+    this.player.invuln = Math.max(this.player.invuln, graceFrames + 30);
+    if (mode !== GameMode.BotRace) {
+      const hint = isTouch
+        ? 'Drag toward a glowing platform · release to grapple'
+        : 'Hold mouse on a glowing platform · release to fling';
+      this.readyOverlay.show({
+        inputHint: hint,
+        durationMs: (graceFrames / 60) * 1000,
+      });
+    }
+    // Defer the tutorial until after the grace so the tutorial card and
+    // the GET READY badge don't compete for attention on the first run.
     if (!this.save.data.settings.tutorialSeen && mode === GameMode.EndlessClimb) {
-      this.startTutorial();
+      const tutorialDelayMs = (graceFrames / 60) * 1000;
+      setTimeout(() => {
+        // Guard: the run may have ended (e.g. player went back to menu)
+        // before the grace finished. Only start the tutorial if we're
+        // still in a fresh first-run playing state.
+        if (
+          this.state === GameState.Playing &&
+          this.mode === GameMode.EndlessClimb &&
+          !this.save.data.settings.tutorialSeen &&
+          !this.tutorial
+        ) {
+          this.startTutorial();
+        }
+      }, tutorialDelayMs);
     }
   }
 
@@ -3339,6 +3431,13 @@ export class Game {
     this.paused = true;
     this.state = GameState.Paused;
     this.crazy.gameplayStop();
+    // If we paused during the intro grace, end it now so the player
+    // isn't stuck on a frozen world after the on-screen badge has
+    // already timed out on its wall-clock setTimeout.
+    if (this.introFrames > 0) {
+      this.introFrames = 0;
+      this.readyOverlay.hide();
+    }
     this.pauseMenu.open({
       onResume: () => {
         this.paused = false;
@@ -3387,6 +3486,14 @@ export class Game {
     this.bossBannerEl?.remove();
     this.bossBannerEl = null;
     this.bossRewardFrames = 0;
+    // Dismiss any in-flight pre-roll overlay (e.g. player hit pause + exit
+    // during the grace window). Idempotent — no-op if nothing is showing.
+    this.readyOverlay.hide();
+    this.introFrames = 0;
+    // Defensive: ensure the SDK's gameplay session is closed when we
+    // navigate back to a menu. The wrapper is idempotent against a
+    // double-stop, so this is safe even when endRun() already fired.
+    this.crazy.gameplayStop();
     // Restore the player's equipped theme — Time Attack temporarily overrides
     // it with a course-specific theme during the run.
     if (this.themes.current.id !== this.save.data.equippedTheme) {
