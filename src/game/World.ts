@@ -73,6 +73,17 @@ export interface WorldConfig {
   finishY: number | null;
   /** Curated layout instead of procedural generation (used by Time Attack). */
   staticLayout?: Obstacle[] | undefined;
+  /**
+   * When true, the opening section is hand-tuned to be forgiving:
+   *   - Wider initial platforms, centered directly above the spawn point
+   *   - Spikes and drones suppressed in the first ~10 procedural groups
+   *
+   * Set to `true` for the player's first-ever run so the first 20–30s
+   * teaches the grapple mechanic without ambushing them with hazards.
+   * Gameplay returns to the normal curve once the player has climbed
+   * past the safe intro band.
+   */
+  easyStart?: boolean;
 }
 
 let nextObstacleId = 1;
@@ -111,6 +122,12 @@ export class World {
   config: WorldConfig;
   killY: number;
   pathX = 0;
+  /**
+   * Count of procedural groups spawned so far. The first few groups are
+   * gated to "safe content only" when `easyStart` is enabled, then the
+   * world transitions to normal difficulty.
+   */
+  private groupsSpawned = 0;
 
   constructor(config: WorldConfig) {
     this.config = config;
@@ -134,16 +151,24 @@ export class World {
   }
 
   private seedInitial(): void {
-    // First few platforms are guaranteed safe and clustered near the start position.
-    for (let i = 0; i < 6; i++) {
-      const y = this.config.startY - 140 - i * 180;
-      const w = 200;
-      const x = -w / 2 + (this.rng.next() - 0.5) * 160;
+    // First few platforms are guaranteed safe. On easy-start (first run)
+    // they are wider and centered directly above the spawn point so a
+    // brand-new player can hit *any* tap upward and connect. On normal
+    // runs we keep a small horizontal wiggle for variety.
+    const easy = this.config.easyStart === true;
+    const count = easy ? 7 : 6;
+    const width = easy ? 260 : 200;
+    const wiggle = easy ? 0 : 160;
+    const gap = easy ? 160 : 180;
+    for (let i = 0; i < count; i++) {
+      const y = this.config.startY - 140 - i * gap;
+      const x =
+        -width / 2 + (wiggle === 0 ? 0 : (this.rng.next() - 0.5) * wiggle);
       this.obstacles.push(
         createObstacle({
           x,
           y,
-          width: w,
+          width,
           height: 22,
           kind: 'platform',
         }),
@@ -166,10 +191,19 @@ export class World {
   }
 
   private spawnGroup(y: number): void {
+    this.groupsSpawned += 1;
+    // First ~10 procedural groups of an easy-start run are restricted to
+    // safe content — platforms, bouncy pads, energy anchors, sparks, and
+    // basic pickups. Spikes, unstable platforms, and patrolling drones
+    // appear only after the player has had time to learn the grapple.
+    const safeBand = this.config.easyStart === true && this.groupsSpawned <= 10;
     const roll = this.rng.next();
     const half = this.config.worldWidth / 2;
     // Path snake — bias new platforms toward a wandering centerline.
-    this.pathX += (this.rng.next() - 0.5) * 220;
+    // Slightly tighter wandering during the safe band so platforms stay
+    // close to the player's expected vertical channel.
+    const snake = safeBand ? 140 : 220;
+    this.pathX += (this.rng.next() - 0.5) * snake;
     this.pathX = clamp(this.pathX, -half + 80, half - 80);
 
     if (roll < 0.62) {
@@ -178,7 +212,10 @@ export class World {
       for (let i = 0; i < count; i++) {
         const width = 100 + this.rng.next() * 120;
         const x = this.pathX + (count === 1 ? -width / 2 : (i === 0 ? -180 : 60));
-        const kind: ObstacleKind = this.rng.next() < 0.18 ? 'unstable' : 'platform';
+        // Suppress unstable platforms during the safe band — they crumble
+        // out from under a new player and feel like an unfair death.
+        const kind: ObstacleKind =
+          !safeBand && this.rng.next() < 0.18 ? 'unstable' : 'platform';
         this.obstacles.push(
           createObstacle({
             x: clamp(x, -half + 20, half - width - 20),
@@ -214,34 +251,63 @@ export class World {
         }),
       );
     } else if (roll < 0.95) {
-      // Spike hazard (no grapple).
-      const width = 60 + this.rng.next() * 60;
-      const sideRoll = this.rng.next();
-      const x = sideRoll < 0.5 ? this.pathX - 260 : this.pathX + 160;
-      this.obstacles.push(
-        createObstacle({
-          x: clamp(x, -half + 20, half - width - 20),
+      // Spike hazard (no grapple) — replaced with an extra platform during
+      // the safe band so first-run players don't see a lethal obstacle
+      // before they've learned to grapple.
+      if (safeBand) {
+        const width = 120 + this.rng.next() * 80;
+        this.obstacles.push(
+          createObstacle({
+            x: clamp(this.pathX - width / 2, -half + 20, half - width - 20),
+            y,
+            width,
+            height: 18,
+            kind: 'platform',
+          }),
+        );
+      } else {
+        const width = 60 + this.rng.next() * 60;
+        const sideRoll = this.rng.next();
+        const x = sideRoll < 0.5 ? this.pathX - 260 : this.pathX + 160;
+        this.obstacles.push(
+          createObstacle({
+            x: clamp(x, -half + 20, half - width - 20),
+            y,
+            width,
+            height: 12,
+            kind: 'spike',
+          }),
+        );
+      }
+    } else {
+      // Drifting drone — slow horizontal oscillation. Safe band substitutes
+      // a static energy node so the player still gets a worthy anchor.
+      if (safeBand) {
+        const size = 32 + this.rng.next() * 12;
+        this.obstacles.push(
+          createObstacle({
+            x: this.pathX - size / 2,
+            y,
+            width: size,
+            height: size,
+            kind: 'energy',
+          }),
+        );
+      } else {
+        const width = 36;
+        const height = 24;
+        const obs = createObstacle({
+          x: this.pathX - width / 2,
           y,
           width,
-          height: 12,
-          kind: 'spike',
-        }),
-      );
-    } else {
-      // Drifting drone — slow horizontal oscillation.
-      const width = 36;
-      const height = 24;
-      const obs = createObstacle({
-        x: this.pathX - width / 2,
-        y,
-        width,
-        height,
-        kind: 'drone',
-      });
-      obs.amp = 120 + this.rng.next() * 80;
-      obs.driftAngle = this.rng.next() * Math.PI * 2;
-      obs.driftSpeed = 0.4 + this.rng.next() * 0.6;
-      this.obstacles.push(obs);
+          height,
+          kind: 'drone',
+        });
+        obs.amp = 120 + this.rng.next() * 80;
+        obs.driftAngle = this.rng.next() * Math.PI * 2;
+        obs.driftSpeed = 0.4 + this.rng.next() * 0.6;
+        this.obstacles.push(obs);
+      }
     }
 
     // Mid-air sparks scattered between platforms (high frequency, immediate reward loop).
