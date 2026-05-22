@@ -1,24 +1,31 @@
 /**
  * Pre-roll "GET READY" overlay shown at the start of every run.
  *
- * The first 90 seconds of a session are make-or-break for a portal reviewer,
- * and the original flow dropped the player into live physics the instant
- * they clicked PLAY — gravity from frame 0, ~0.5s until lava contact if they
- * froze. This component gives them a calm beat to read the screen, see the
- * control hint, and engage on their own terms.
+ * Two dismissal modes:
+ *   - Timed (returning players): badge auto-fades after `durationMs`.
+ *   - Wait-for-input (first-run players): badge stays visible until the
+ *     player clicks/taps anywhere. Critical for CrazyGames — a brand-new
+ *     player needs as long as they need to read the screen before any
+ *     timer steals the hint away.
  *
- * Visual: a full-screen non-blocking layer with a large "GET READY" badge
- * and a single-line control hint. Auto-dismisses after `durationMs`.
- *
- * The overlay uses `pointer-events: none` so it never eats the first input —
- * a player who's ready to grapple can already be moving the mouse / lining
- * up a tap. Game.ts is responsible for honoring the grace window in physics.
+ * The overlay never blocks input. Game.ts honors the grace window in
+ * physics; the overlay just provides the on-screen badge + hint.
  */
 export interface ReadyOverlayOptions {
   /** One-line hint placed under the badge (control prompt). */
   inputHint: string;
-  /** How long the overlay stays visible, in ms. */
+  /**
+   * How long the overlay stays visible, in ms. Ignored when
+   * `waitForInput` is true (the overlay then persists until the player
+   * actually performs an input gesture).
+   */
   durationMs: number;
+  /**
+   * When true, the overlay does NOT auto-dismiss on a timer; it stays
+   * visible until the player clicks, taps, or presses a key. Used for
+   * brand-new players so the hint can't disappear before they're ready.
+   */
+  waitForInput?: boolean;
   /** Optional callback fired after the overlay has finished fading out. */
   onComplete?: () => void;
 }
@@ -28,6 +35,7 @@ export class ReadyOverlay {
   private el: HTMLDivElement | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private fadeTimer: ReturnType<typeof setTimeout> | null = null;
+  private inputListener: ((e: Event) => void) | null = null;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -37,19 +45,40 @@ export class ReadyOverlay {
     this.hide();
     const wrap = document.createElement('div');
     wrap.className = 'ready-overlay';
+    const ctaText = opts.waitForInput ? 'CLICK / TAP TO START' : 'GET READY';
     wrap.innerHTML = `
-      <div class="ready-badge">GET READY</div>
+      <div class="ready-badge">${ctaText}</div>
       <div class="ready-hint">${escapeHtml(opts.inputHint)}</div>
     `;
     this.root.appendChild(wrap);
     this.el = wrap;
+
+    if (opts.waitForInput) {
+      // First-time player: hold the badge until they actually gesture.
+      // The listener fires on the FIRST pointerdown / keydown anywhere
+      // on the document — including the canvas, the touch buttons, etc.
+      // The grace window in Game.ts also waits for this signal via the
+      // `onComplete` callback.
+      const listener = (): void => {
+        this.dismissNow(opts.onComplete);
+      };
+      this.inputListener = listener;
+      // `capture: true` so we hear the event even if downstream stops it.
+      document.addEventListener('pointerdown', listener, { once: true, capture: true });
+      document.addEventListener('keydown', listener, { once: true, capture: true });
+      document.addEventListener('touchstart', listener, { once: true, capture: true });
+      return;
+    }
+
     const visibleMs = Math.max(200, opts.durationMs - 220);
     this.timer = setTimeout(() => {
-      this.beginFade();
-      // Fire onComplete in lockstep with the fade so the gameplay grace
-      // ending visually aligns with the overlay disappearing.
-      opts.onComplete?.();
+      this.dismissNow(opts.onComplete);
     }, visibleMs);
+  }
+
+  private dismissNow(onComplete?: () => void): void {
+    this.beginFade();
+    onComplete?.();
   }
 
   private beginFade(): void {
@@ -68,6 +97,12 @@ export class ReadyOverlay {
     if (this.fadeTimer) {
       clearTimeout(this.fadeTimer);
       this.fadeTimer = null;
+    }
+    if (this.inputListener) {
+      document.removeEventListener('pointerdown', this.inputListener, true);
+      document.removeEventListener('keydown', this.inputListener, true);
+      document.removeEventListener('touchstart', this.inputListener, true);
+      this.inputListener = null;
     }
     if (this.el) {
       this.el.remove();

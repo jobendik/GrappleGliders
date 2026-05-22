@@ -192,11 +192,13 @@ export class World {
 
   private spawnGroup(y: number): void {
     this.groupsSpawned += 1;
-    // First ~10 procedural groups of an easy-start run are restricted to
+    // First ~25 procedural groups of an easy-start run are restricted to
     // safe content — platforms, bouncy pads, energy anchors, sparks, and
     // basic pickups. Spikes, unstable platforms, and patrolling drones
     // appear only after the player has had time to learn the grapple.
-    const safeBand = this.config.easyStart === true && this.groupsSpawned <= 10;
+    // 25 groups covers the full tutorial flow (player reaches ~120m) plus
+    // a generous post-tutorial buffer.
+    const safeBand = this.config.easyStart === true && this.groupsSpawned <= 25;
     const roll = this.rng.next();
     const half = this.config.worldWidth / 2;
     // Path snake — bias new platforms toward a wandering centerline.
