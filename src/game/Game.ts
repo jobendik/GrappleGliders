@@ -383,9 +383,20 @@ export class Game {
     // username are attached in the background; either may fail without
     // blocking the menu.
     this.crazy.loadingStart();
-    this.openMainMenu();
-    this.startLoop();
-    this.crazy.loadingStop();
+    // 20s belt-and-suspenders watchdog. Matches the proven pattern from
+    // other CrazyGames-shipped games: even if the synchronous menu mount
+    // below crashes mid-flight, the SDK's loading state still closes so
+    // CrazyGames doesn't see an orphan loadingStart in the log. The
+    // wrapper's loadingActive flag makes the normal loadingStop below
+    // idempotent against this fallback.
+    const loadingWatchdog = setTimeout(() => this.crazy.loadingStop(), 20_000);
+    try {
+      this.openMainMenu();
+      this.startLoop();
+    } finally {
+      this.crazy.loadingStop();
+      clearTimeout(loadingWatchdog);
+    }
 
     void (async () => {
       await this.crazy.init();
