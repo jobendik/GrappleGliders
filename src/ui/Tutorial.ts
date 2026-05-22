@@ -66,7 +66,7 @@ const TOUCH_STEPS: TutorialStep[] = [
   },
   {
     message:
-      'Now keep going — grapple, swing, release. Reach 120m to graduate.',
+      'GOAL: Climb as high as you can! Grapple → swing → release, repeat. Reach 120m to graduate from the tutorial.',
     require: 'altitude',
     threshold: 120,
     fallbackMs: null,
@@ -94,7 +94,7 @@ const DESKTOP_STEPS: TutorialStep[] = [
   },
   {
     message:
-      'Now keep going — grapple, swing, release. Reach 120m to graduate.',
+      'GOAL: Climb as high as you can! Grapple → swing → release, repeat. Reach 120m to graduate from the tutorial.',
     require: 'altitude',
     threshold: 120,
     fallbackMs: null,

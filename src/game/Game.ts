@@ -2534,7 +2534,9 @@ export class Game {
       this.world?.setKillY(this.killY);
     }
     // Big celebratory beat — toast, sound, camera flash, SCREEN text.
-    this.toast.show('Tutorial complete — now climb forever!');
+    // Restates the goal explicitly so the player carries it forward into
+    // real gameplay: keep climbing, beat your best.
+    this.toast.show('Tutorial complete — now CLIMB HIGHER!');
     this.sfx.personalBest();
     this.camera.flash(0.35);
     this.screen.pulseBloom(0.6);
@@ -2549,7 +2551,7 @@ export class Game {
         life: 1.1,
       });
       this.screen.addFloatingText(
-        'YOU GOT IT!',
+        'CLIMB HIGHER!',
         this.player.pos.x,
         this.player.pos.y - 50,
         '#ffd400',

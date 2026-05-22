@@ -151,22 +151,35 @@ export class World {
   }
 
   private seedInitial(): void {
-    // First few platforms are guaranteed safe. On easy-start (first run)
-    // they are wider and centered directly above the spawn point so a
-    // brand-new player can hit *any* tap upward and connect. On normal
-    // runs we keep a small horizontal wiggle for variety.
+    // First few platforms are guaranteed safe.
+    //
+    // On easy-start (first run) the platforms are deliberately NARROW (130
+    // px wide), not wide — a wide platform blocks the swing arc and gives
+    // the rope less room to pass without colliding. Aim assist + Easy
+    // Mode's giant snap radius handle "is this platform easy to grab?";
+    // the platform body itself should stay slim so the swing feels open.
+    //
+    // Position alternates left/right of center so the player has to swing
+    // to reach each one. The first two are centered (so the very first
+    // grapple is dead simple), then platforms 3+ stagger ±110 px so the
+    // tutorial's "swing left and right" lesson is encoded in the layout
+    // itself — you can't just climb straight up.
     const easy = this.config.easyStart === true;
-    const count = easy ? 7 : 6;
-    const width = easy ? 260 : 200;
-    const wiggle = easy ? 0 : 160;
+    const count = easy ? 8 : 6;
+    const width = easy ? 130 : 200;
     const gap = easy ? 160 : 180;
     for (let i = 0; i < count; i++) {
       const y = this.config.startY - 140 - i * gap;
-      const x =
-        -width / 2 + (wiggle === 0 ? 0 : (this.rng.next() - 0.5) * wiggle);
+      let centerX = 0;
+      if (easy) {
+        // i=0,1 stay centered; from i=2 onward alternate ±110 px.
+        if (i >= 2) centerX = i % 2 === 0 ? -110 : 110;
+      } else {
+        centerX = (this.rng.next() - 0.5) * 160;
+      }
       this.obstacles.push(
         createObstacle({
-          x,
+          x: centerX - width / 2,
           y,
           width,
           height: 22,
@@ -212,7 +225,13 @@ export class World {
       // Standard platform row, 1-2 platforms with a gap.
       const count = this.rng.next() < 0.4 ? 2 : 1;
       for (let i = 0; i < count; i++) {
-        const width = 100 + this.rng.next() * 120;
+        // Safe-band platforms are NARROWER (90–140) than normal (100–220).
+        // A slimmer platform body gives the swing arc more room to pass
+        // without colliding — wider platforms aren't easier, they're
+        // harder, because they block the rope's lateral travel.
+        const width = safeBand
+          ? 90 + this.rng.next() * 50
+          : 100 + this.rng.next() * 120;
         const x = this.pathX + (count === 1 ? -width / 2 : (i === 0 ? -180 : 60));
         // Suppress unstable platforms during the safe band — they crumble
         // out from under a new player and feel like an unfair death.
@@ -241,8 +260,9 @@ export class World {
         }),
       );
     } else if (roll < 0.88) {
-      // Bouncy panel.
-      const width = 90 + this.rng.next() * 60;
+      // Bouncy panel. Trimmed during the safe band so it doesn't block
+      // a beginner's swing trajectory mid-arc.
+      const width = safeBand ? 70 + this.rng.next() * 30 : 90 + this.rng.next() * 60;
       this.obstacles.push(
         createObstacle({
           x: this.pathX - width / 2,
