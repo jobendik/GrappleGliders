@@ -196,9 +196,29 @@ export class Game {
    * Pre-roll grace window in "frames at 60fps". While > 0, player physics
    * and the lava kill-line are frozen so a new player can read the screen
    * and line up their first shot without being insta-killed by gravity.
-   * Returning players get ~1s; first-time players get ~3s.
+   * Returning players get ~1s; first-time players get ~3s and the overlay
+   * waits for input rather than a timer.
    */
   private introFrames = 0;
+  /**
+   * True for the player's first-ever Endless run, until the tutorial
+   * completes. While true:
+   *   - Lava is completely frozen (kill-line never moves up)
+   *   - Tutorial step prompts wait indefinitely for action
+   *   - Death is effectively impossible (no lava + safe-band layout)
+   *
+   * This is the core "make CrazyGames reviewers love the first 60s" fix:
+   * the game is genuinely hard at full difficulty, so first-time players
+   * learn the mechanic in a zero-stakes environment and only enter the
+   * real game once they've demonstrated competence.
+   */
+  private inTutorialFlow = false;
+  /**
+   * Tracks swing direction history while the player is attached. Set bits:
+   * 0 = went left (vel.x < threshold), 1 = went right. Both bits = swung.
+   * Cleared when the hook detaches. Used by the tutorial swing step.
+   */
+  private swingBits = 0;
   /** For combo run mode timer. */
   private modeTimer = 0;
   /** For Time Attack speed-run timer (counts up). */
@@ -590,14 +610,18 @@ export class Game {
         return;
       }
     } else if (this.mode === GameMode.EndlessClimb || this.mode === GameMode.DailyChallenge) {
-      // Lava accelerates over time.
-      if (this.framesSinceStart > 600) {
+      // Lava accelerates over time. Suspended during the tutorial flow so
+      // the lava speed remains at its slow easy-start value when the
+      // tutorial completes and real gameplay begins.
+      if (this.framesSinceStart > 600 && !this.inTutorialFlow) {
         this.lavaSpeed += this.lavaAcceleration * dt;
       }
     }
 
-    // Lava (kill line) drifts upward when in modes that use it.
-    if (this.usesLava()) {
+    // Lava (kill line) drifts upward when in modes that use it. Frozen
+    // during the tutorial flow so a brand-new player literally cannot
+    // die from rising lava while they're still learning the controls.
+    if (this.usesLava() && !this.inTutorialFlow) {
       if (this.slowLavaFrames > 0) {
         this.slowLavaFrames -= dt;
         this.killY -= this.lavaSpeed * 0.25 * dt;
@@ -703,6 +727,39 @@ export class Game {
     if (dashRequested && this.player.dashCharges > 0) this.dashCount += 1;
 
     this.player.update(dt, playerInput, this.world, this.killY);
+
+    // Tutorial safety net — if the player falls more than ~600px below
+    // their spawn (e.g., they clicked downward or missed their first hook
+    // shot entirely), soft-respawn at origin so the screen doesn't go
+    // blank with them falling forever. No GameOver, no penalty — just a
+    // friendly toast pointing them at the platforms.
+    if (this.inTutorialFlow && this.player.pos.y > 600) {
+      this.player.pos.set(0, -120);
+      this.player.prev.copy(this.player.pos);
+      this.player.vel.set(0, 0);
+      this.player.invuln = 90;
+      this.player.hook.reset();
+      this.camera.reset(this.player.pos);
+      this.toast.show('Aim upward — click and HOLD a glowing platform.');
+    }
+
+    // Swing detection — used by the tutorial swing step. The player is
+    // "swinging" when, while attached, they've applied moveX in BOTH
+    // directions. Bit 0 = went left, bit 1 = went right; both set fires
+    // the swing event. State clears on hook detach so each new swing has
+    // to demonstrate both directions afresh.
+    if (this.tutorial && !this.tutorial.isComplete()) {
+      if (this.player.hook.state === 'attached') {
+        if (playerInput.moveX < -0.3) this.swingBits |= 1;
+        else if (playerInput.moveX > 0.3) this.swingBits |= 2;
+        if (this.swingBits === 3) {
+          this.tutorial.notify('swing');
+          this.swingBits = 0;
+        }
+      } else if (this.swingBits !== 0) {
+        this.swingBits = 0;
+      }
+    }
 
     // Rope reel SFX — only play while the rope length is *actually* changing.
     // Holding the mouse with the rope clamped at minimum length should be
@@ -904,8 +961,10 @@ export class Game {
     // Tutorial altitude notify (final step gates on this).
     this.tutorial?.notify('altitude', { altitude: this.player.maxAltitude });
 
-    // Ambient looped sounds — lava warning and wind altitude.
-    if (this.usesLava()) {
+    // Ambient looped sounds — lava warning and wind altitude. Lava cues
+    // are suppressed during the tutorial flow (no lava is present, and a
+    // crescendo would teach the player to fear something that isn't there).
+    if (this.usesLava() && !this.inTutorialFlow) {
       const distToLava = this.killY - this.player.pos.y;
       const lavaIntensity = Math.max(0, Math.min(1, 1 - distToLava / 600));
       this.sfx.lavaWarning(lavaIntensity);
@@ -1040,7 +1099,7 @@ export class Game {
     if (this.world && this.player) {
       this.renderer.pushCamera(this.camera);
       // Lava
-      if (this.usesLava()) {
+      if (this.usesLava() && !this.inTutorialFlow) {
         this.drawLava(theme.lava);
       }
       // Personal best altitude line
@@ -1100,7 +1159,7 @@ export class Game {
       this.screen.drawWorld(this.renderer.ctx);
       this.renderer.popCamera();
       // Lava-proximity vignette on top of the world.
-      if (this.usesLava()) this.drawLavaVignette();
+      if (this.usesLava() && !this.inTutorialFlow) this.drawLavaVignette();
       // Shield indicator near player
       if (this.player.shield > 0) this.drawShieldHalo();
       // Magnet halo — rotating orbit ring around the player while active.
@@ -2393,7 +2452,56 @@ export class Game {
       this.tutorial = null;
       this.save.data.settings.tutorialSeen = true;
       this.save.save();
+      // Tutorial complete → graduate into real gameplay. The lava starts
+      // moving, the world resumes normal difficulty. We celebrate the
+      // transition so the player feels the shift: "I've earned this".
+      if (this.inTutorialFlow) {
+        this.completeTutorialFlow();
+      }
     });
+  }
+
+  /**
+   * Smooth transition from "no-lava tutorial" to "real Endless gameplay".
+   * Called when the tutorial step sequence finishes. The lava re-engages
+   * at a generous distance from the player so the moment feels triumphant
+   * rather than punishing.
+   */
+  private completeTutorialFlow(): void {
+    if (!this.inTutorialFlow) return;
+    this.inTutorialFlow = false;
+    // Re-anchor the kill line to a generous distance below the player.
+    // Player is at altitude ~120m (y ≈ -1200). Putting killY at player.y + 1400
+    // gives them about 23 seconds of runway at the slow easy-start lava speed
+    // before any pressure starts to register — plenty to enjoy the win.
+    if (this.player) {
+      this.killY = this.player.pos.y + 1400;
+      this.world?.setKillY(this.killY);
+    }
+    // Big celebratory beat — toast, sound, camera flash, SCREEN text.
+    this.toast.show('Tutorial complete — now climb forever!');
+    this.sfx.personalBest();
+    this.camera.flash(0.35);
+    this.screen.pulseBloom(0.6);
+    if (this.player) {
+      this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#ffd400', {
+        size: 36,
+        life: 0.9,
+        thickness: 5,
+      });
+      this.particles.burst(this.player.pos.x, this.player.pos.y, 24, '#00ff8a', {
+        speed: 1.2,
+        life: 1.1,
+      });
+      this.screen.addFloatingText(
+        'YOU GOT IT!',
+        this.player.pos.x,
+        this.player.pos.y - 50,
+        '#ffd400',
+        { size: 32, life: 2, bold: true, vy: -1.2 },
+      );
+    }
+    this.crazy.happytime();
   }
 
   private startMode(mode: GameMode): void {
@@ -2711,11 +2819,14 @@ export class Game {
     this.camera.reset(this.player.pos);
     this.killY = 600;
     this.lavaSpeed = mode === GameMode.ComboRun ? 1.8 : 0.94;
-    // First-run Endless gets a more forgiving lava setup so the player has
-    // a generous window to climb the first time. ~30% slower start speed
-    // and lava begins ~200px lower (almost a full extra screen of runway).
+    // First-run Endless is the tutorial flow: lava is parked at an
+    // effectively-infinite distance so the player cannot die from a
+    // missed grapple or a sustained fall. The lava re-anchors close to
+    // the player when `completeTutorialFlow()` runs (after they finish
+    // the last tutorial step), so they immediately feel the stakes
+    // change when they "graduate" into the real game.
     if (easyStart) {
-      this.killY = 800;
+      this.killY = 1_000_000;
       this.lavaSpeed = 0.66;
     }
     this.framesSinceStart = 0;
@@ -2807,45 +2918,72 @@ export class Game {
     // Pre-roll grace + on-screen "GET READY". Without this the original
     // boot dumped the player into live physics — gravity from frame 0,
     // ~0.5s until lava contact if they did nothing. CrazyGames reviewers
-    // experience exactly that scenario, and it was a major contributor to
-    // the first rejection. The grace window freezes physics & lava while
-    // the badge is visible (handled in updatePlay).
+    // experienced exactly that scenario.
+    //
+    // Two dismissal modes:
+    //   - First-time players: the badge says "CLICK / TAP TO START" and
+    //     stays up indefinitely. The player dismisses it themselves. This
+    //     is the difference between "the hint disappeared before I could
+    //     read it" and "I read the hint and then started when I was ready".
+    //   - Returning players: short timed grace (~1.25s).
     //
     // BotRace already uses its own SFX-driven race-start countdown, so we
     // skip the ready overlay for that mode to avoid a competing UI cue.
     const isFirstRun = !this.save.data.settings.tutorialSeen;
     const isTouch = this.input.isTouch;
-    const graceFrames = isFirstRun ? 200 : 75; // ~3.3s vs ~1.25s @ 60fps
-    this.introFrames = graceFrames;
+    const isTutorialEndless = isFirstRun && mode === GameMode.EndlessClimb;
+    // Tutorial flow: no lava, no death, persistent prompts. Lasts until
+    // the tutorial's altitude-graduation step completes (see startTutorial).
+    this.inTutorialFlow = isTutorialEndless;
+    this.swingBits = 0;
+    // Returning players still get a 75-frame grace; first-run uses
+    // wait-for-input but we also seed introFrames as a backstop in case
+    // the input listener somehow misses (still freezes physics + lava).
+    const graceFrames = isFirstRun ? 600 : 75; // ~10s safety vs ~1.25s
+    this.introFrames = isFirstRun ? graceFrames : graceFrames;
     // Spawn invuln carries ~0.5s past the grace so the player doesn't
     // insta-die on the first frame physics resume.
     this.player.invuln = Math.max(this.player.invuln, graceFrames + 30);
     if (mode !== GameMode.BotRace) {
-      const hint = isTouch
-        ? 'Drag toward a glowing platform · release to grapple'
-        : 'Hold mouse on a glowing platform · release to fling';
+      let hint: string;
+      if (isTutorialEndless) {
+        hint = isTouch
+          ? 'Tutorial mode — no lava. Drag toward a glowing platform, release to grapple.'
+          : 'Tutorial mode — no lava. Click and HOLD a glowing platform to grapple.';
+      } else if (isTouch) {
+        hint = 'Drag toward a glowing platform · release to grapple';
+      } else {
+        hint = 'Hold mouse on a glowing platform · release to fling';
+      }
       this.readyOverlay.show({
         inputHint: hint,
         durationMs: (graceFrames / 60) * 1000,
+        waitForInput: isFirstRun,
+        onComplete: () => {
+          // Snap the physics grace to zero in lockstep with the overlay
+          // disappearing. Without this, returning players could see the
+          // badge fade but feel an extra ~0.2s of frozen lag, and
+          // first-run players would have introFrames > 0 long after they
+          // dismissed the badge.
+          this.introFrames = 0;
+          // First-run only: spin up the tutorial flow once the player
+          // has confirmed they're ready. Guarded against state changes
+          // that might have happened during the wait (e.g., player hit
+          // the pause menu somehow, or returned to the main menu).
+          if (
+            isTutorialEndless &&
+            this.state === GameState.Playing &&
+            this.mode === GameMode.EndlessClimb &&
+            !this.save.data.settings.tutorialSeen &&
+            !this.tutorial
+          ) {
+            this.startTutorial();
+          }
+        },
       });
-    }
-    // Defer the tutorial until after the grace so the tutorial card and
-    // the GET READY badge don't compete for attention on the first run.
-    if (!this.save.data.settings.tutorialSeen && mode === GameMode.EndlessClimb) {
-      const tutorialDelayMs = (graceFrames / 60) * 1000;
-      setTimeout(() => {
-        // Guard: the run may have ended (e.g. player went back to menu)
-        // before the grace finished. Only start the tutorial if we're
-        // still in a fresh first-run playing state.
-        if (
-          this.state === GameState.Playing &&
-          this.mode === GameMode.EndlessClimb &&
-          !this.save.data.settings.tutorialSeen &&
-          !this.tutorial
-        ) {
-          this.startTutorial();
-        }
-      }, tutorialDelayMs);
+    } else if (isTutorialEndless) {
+      // BotRace + first-run is a weird combo, but cover it anyway.
+      this.startTutorial();
     }
   }
 
@@ -3490,6 +3628,8 @@ export class Game {
     // during the grace window). Idempotent — no-op if nothing is showing.
     this.readyOverlay.hide();
     this.introFrames = 0;
+    this.inTutorialFlow = false;
+    this.swingBits = 0;
     // Defensive: ensure the SDK's gameplay session is closed when we
     // navigate back to a menu. The wrapper is idempotent against a
     // double-stop, so this is safe even when endRun() already fired.

@@ -1,19 +1,33 @@
 /**
  * Interactive onboarding. Each step waits for the player to perform the
- * required action (fire a grapple, release it, dash) before advancing, with a
- * timed fallback so anyone stuck on a step still progresses. The UI highlights
- * the relevant button on mobile and shows a clear hint card.
+ * required action (fire a grapple, swing left/right, release, climb) before
+ * advancing. Steps that gate progress have NO fallback timer — they wait
+ * forever, because a CrazyGames-platform first-time player needs to learn
+ * by doing, not by watching the hint disappear before they understand it.
+ *
+ * The game freezes lava entirely while the tutorial is active (see
+ * `Game.inTutorialFlow`), so a player cannot fail out of the tutorial.
  */
 
-export type TutorialAction = 'hookConnect' | 'hookRelease' | 'dash' | 'altitude';
+export type TutorialAction =
+  | 'hookConnect'
+  | 'hookRelease'
+  | 'swing'
+  | 'dash'
+  | 'altitude';
 
 interface TutorialStep {
   /** Hint message shown to the player. */
   message: string;
   /** Action required to advance. `null` means timed only. */
   require: TutorialAction | null;
-  /** ms before the step auto-advances even if the action wasn't completed. */
-  fallbackMs: number;
+  /**
+   * ms before the step auto-advances even if the action wasn't completed.
+   * `null` means the step waits indefinitely. Use `null` for any step
+   * that gates real progress so the prompt never disappears while the
+   * player is still figuring out what to do.
+   */
+  fallbackMs: number | null;
   /** Optional CSS selector for an element to highlight while the step is active. */
   highlight?: string;
   /** Optional altitude threshold for the 'altitude' action. */
@@ -33,50 +47,57 @@ const isTouchDevice = (): boolean =>
 
 const TOUCH_STEPS: TutorialStep[] = [
   {
-    message: 'Drag from anywhere — a reticle snaps to glowing platforms. Lift your finger to fire your grapple.',
+    message:
+      'Drag toward a glowing platform. A reticle snaps to it — lift your finger to fire your grapple. No lava yet, take your time.',
     require: 'hookConnect',
-    fallbackMs: 15000,
+    fallbackMs: null,
   },
   {
-    message: 'Once attached, use the ▲ button to climb the rope, or ▼ to swing wider. Tap anywhere to release.',
-    require: 'hookRelease',
-    fallbackMs: 14000,
-  },
-  {
-    message: 'Tap the DASH button to burst forward. Your aim direction matters — finger held = dash that way.',
-    require: 'dash',
-    fallbackMs: 12000,
-    highlight: '.touch-btn.dash',
-  },
-  {
-    message: 'Lava is rising — climb fast. Reach 100m to finish the tutorial.',
-    require: 'altitude',
-    threshold: 100,
+    message:
+      'You\'re hanging on the rope. Tap the ◀ and ▶ buttons (or tilt) to SWING left and right — that\'s how you climb.',
+    require: 'swing',
     fallbackMs: 30000,
+  },
+  {
+    message:
+      'At the peak of your swing, TAP anywhere to release the hook. You\'ll fling forward — perfect for reaching the next platform.',
+    require: 'hookRelease',
+    fallbackMs: null,
+  },
+  {
+    message:
+      'Now keep going — grapple, swing, release. Reach 120m to graduate.',
+    require: 'altitude',
+    threshold: 120,
+    fallbackMs: null,
   },
 ];
 
 const DESKTOP_STEPS: TutorialStep[] = [
   {
-    message: 'Aim at a glowing platform — click & HOLD to fire your grapple.',
+    message:
+      'Click and HOLD on a glowing platform to fire your grapple. Take your time — no lava during the tutorial.',
     require: 'hookConnect',
-    fallbackMs: 15000,
+    fallbackMs: null,
   },
   {
-    message: 'Now RELEASE to fling forward. Bigger swings launch you higher.',
-    require: 'hookRelease',
-    fallbackMs: 12000,
-  },
-  {
-    message: 'Press SPACE to dash — burst through gaps. (W/S reels the rope in or out while attached.)',
-    require: 'dash',
-    fallbackMs: 12000,
-  },
-  {
-    message: 'Lava is rising — climb fast. Reach 100m to finish the tutorial.',
-    require: 'altitude',
-    threshold: 100,
+    message:
+      'You\'re hanging on the rope. Press A / D (or ← / →) to SWING left and right — that\'s how you climb.',
+    require: 'swing',
     fallbackMs: 30000,
+  },
+  {
+    message:
+      'At the peak of your swing, RELEASE the mouse to fling forward. Bigger swings launch you higher.',
+    require: 'hookRelease',
+    fallbackMs: null,
+  },
+  {
+    message:
+      'Now keep going — grapple, swing, release. Reach 120m to graduate.',
+    require: 'altitude',
+    threshold: 120,
+    fallbackMs: null,
   },
 ];
 
@@ -146,7 +167,9 @@ export class Tutorial {
       // Defer one frame so we pick up freshly-created touch controls.
       requestAnimationFrame(() => this.applyHighlight(step.highlight!));
     }
-    this.timer = setTimeout(() => this.advance(), step.fallbackMs);
+    if (step.fallbackMs !== null) {
+      this.timer = setTimeout(() => this.advance(), step.fallbackMs);
+    }
   }
 
   private applyHighlight(selector: string): void {

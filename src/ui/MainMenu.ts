@@ -57,7 +57,7 @@ export class MainMenu {
         <h1 class="title gradient-text menu-title">Grapple Gliders</h1>
         <div class="menu-subtitle">
           <strong>Swing, glide, and survive.</strong>
-          <em>${isFirstRun ? 'Hold to grapple · release to fling.' : 'Beat your best distance.'}</em>
+          <em>${isFirstRun ? 'New here? Press PLAY for a safe tutorial — no lava, no rush.' : 'Beat your best distance.'}</em>
         </div>
 
         <div class="menu-pills" role="tablist" data-el="pills"></div>
@@ -177,7 +177,7 @@ export class MainMenu {
     const hint = modal.querySelector<HTMLElement>('[data-el="hint"]')!;
     if (isFirstRun) {
       play.textContent = 'PLAY';
-      hint.textContent = 'Quick intro plays the first time — skip anytime.';
+      hint.textContent = 'Tutorial plays the first time — skippable, totally safe.';
     } else if (mode === GameMode.DailyChallenge && daily.hasSubmittedToday()) {
       play.textContent = 'REPLAY (PRACTICE)';
       hint.textContent = 'Ranked attempt already submitted.';
