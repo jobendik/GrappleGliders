@@ -203,8 +203,6 @@ export class Game {
   private nextMilestone = 100;
   /** Frames remaining of "slow lava" effect from the slow-pickup. */
   private slowLavaFrames = 0;
-  /** Have we shown the preroll midgame ad yet this session? */
-  private prerollShown = false;
   /**
    * Visual-only lava fireballs that arc up and back down. Pure decoration —
    * they don't damage the player, but they sell the danger of the lava.
@@ -621,6 +619,10 @@ export class Game {
       hookTarget,
       releaseHook: releaseHookFlag,
       aimPoint: aimPointForDash,
+      // On touch devices, slowly reel in automatically once the hook is
+      // attached so the player is steadily pulled upward without pressing
+      // the reel button. Manual reel input still takes priority in Player.update().
+      autoReel: snap.isTouch,
     };
     if (dashRequested && this.player.dashCharges > 0) this.dashCount += 1;
 
@@ -2317,21 +2319,6 @@ export class Game {
   }
 
   private startMode(mode: GameMode): void {
-    // Show a preroll midgame ad once per session before the very first run,
-    // then re-enter startMode after it resolves.
-    if (!this.prerollShown && this.crazy.available) {
-      this.prerollShown = true;
-      this.mainMenu.close();
-      this.dailyScreen.close();
-      this.gameOver.close();
-      this.showPrerollOverlay();
-      void this.crazy.requestAd('midgame', 240).finally(() => {
-        this.hidePrerollOverlay();
-        this.startMode(mode);
-      });
-      return;
-    }
-    this.prerollShown = true;
     this.mode = mode;
     this.mainMenu.close();
     this.dailyScreen.close();
@@ -3157,31 +3144,6 @@ export class Game {
     await this.crazy.requestAd('midgame', 240);
   }
 
-  private prerollEl: HTMLDivElement | null = null;
-
-  private showPrerollOverlay(): void {
-    if (this.prerollEl) return;
-    const el = document.createElement('div');
-    el.className = 'preroll-overlay';
-    el.innerHTML = `
-      <div class="preroll-card">
-        <div class="preroll-logo gradient-text">GRAPPLE<br>GLIDERS</div>
-        <div class="preroll-spinner"></div>
-        <div class="preroll-label">Loading…</div>
-      </div>
-    `;
-    this.overlayRoot.appendChild(el);
-    this.prerollEl = el;
-  }
-
-  private hidePrerollOverlay(): void {
-    if (!this.prerollEl) return;
-    this.prerollEl.classList.add('fading');
-    const el = this.prerollEl;
-    this.prerollEl = null;
-    setTimeout(() => el.remove(), 280);
-  }
-
   private async requestRevive(): Promise<void> {
     if (this.hasUsedRevive || !this.player) return;
     const adResult = await this.crazy.requestAd('rewarded');
@@ -3335,10 +3297,12 @@ export class Game {
     if (this.paused) return;
     this.paused = true;
     this.state = GameState.Paused;
+    this.crazy.gameplayStop();
     this.pauseMenu.open({
       onResume: () => {
         this.paused = false;
         this.state = GameState.Playing;
+        this.crazy.gameplayStart();
       },
       onRestart: () => this.startMode(this.mode),
       onExit: () => this.openMainMenu(),
@@ -3352,6 +3316,7 @@ export class Game {
               onResume: () => {
                 this.paused = false;
                 this.state = GameState.Playing;
+                this.crazy.gameplayStart();
               },
               onRestart: () => this.startMode(this.mode),
               onExit: () => this.openMainMenu(),

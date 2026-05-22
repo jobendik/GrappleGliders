@@ -146,6 +146,8 @@ export const PHYSICS = Object.freeze({
   ropeForce: 0.035,
   ropeDamping: 0.996,
   reelSpeed: 5.1,
+  /** Slow passive reel-in applied automatically on mobile when the hook is attached. */
+  autoReelSpeed: 2.5,
   ropeMinLength: 54,
   ropeMaxLength: 980,
   releaseBoost: 1.075,

@@ -2,7 +2,22 @@ import type { CrazyGamesSDK as SDK } from '../types/global';
 
 const SDK_URL = 'https://sdk.crazygames.com/crazygames-sdk-v3.js';
 const SDK_LOAD_TIMEOUT_MS = 3000;
-const SDK_INIT_TIMEOUT_MS = 2500;
+// Standalone (itch, direct hosting) — the SDK hangs ~10s on the parent-frame
+// handshake before resolving as "disabled"; bail fast so boot isn't blocked.
+const SDK_INIT_TIMEOUT_STANDALONE_MS = 2500;
+// Iframe (CrazyGames portal, official embeds) — the handshake is real and
+// needs time. Too short a timeout silently disables every subsequent SDK call,
+// including gameplayStart, which then fails CG's "First gameplay start" check.
+const SDK_INIT_TIMEOUT_IFRAME_MS = 15_000;
+
+function isLikelyHostedInIframe(): boolean {
+  try {
+    return window.self !== window.top;
+  } catch {
+    // Cross-origin access threw — definitely embedded.
+    return true;
+  }
+}
 
 export type AdType = 'midgame' | 'rewarded';
 
@@ -18,6 +33,8 @@ export class CrazyGamesPlatform {
   private loadAttempted = false;
   private lastAdTime = 0;
   private lastHappytime = 0;
+  private gameplayActive = false;
+  private adsAvailable = true;
   available = false;
 
   async init(): Promise<void> {
@@ -30,10 +47,13 @@ export class CrazyGamesPlatform {
       // Race init against a timeout — on non-CrazyGames domains the SDK can
       // spend ~10s waiting on a parent frame handshake before resolving as
       // "disabled". We don't want that on the boot path.
+      const initTimeoutMs = isLikelyHostedInIframe()
+        ? SDK_INIT_TIMEOUT_IFRAME_MS
+        : SDK_INIT_TIMEOUT_STANDALONE_MS;
       await Promise.race([
         sdk.init(),
         new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error('SDK init timeout')), SDK_INIT_TIMEOUT_MS),
+          setTimeout(() => reject(new Error('SDK init timeout')), initTimeoutMs),
         ),
       ]);
       // Probe a getter to detect the "disabled" environment, in which the SDK
@@ -47,7 +67,14 @@ export class CrazyGamesPlatform {
       }
       this.sdk = sdk;
       this.available = true;
+      // CrazyGames Basic Launch requires both sdkGameLoadingStart and
+      // sdkGameLoadingStop to appear in the SDK log. The SDK only logs
+      // them after init() resolves, so emit start→stop here in order.
+      this.safeCall(() => sdk.game.loadingStart?.());
       this.safeCall(() => sdk.game.loadingStop?.());
+      if (this.gameplayActive) {
+        this.safeCall(() => sdk.game.gameplayStart?.());
+      }
     } catch {
       // SDK unavailable (CDN blocked, init timed out, or environment disabled).
       this.available = false;
@@ -104,11 +131,15 @@ export class CrazyGamesPlatform {
   }
 
   gameplayStart(): void {
+    if (this.gameplayActive) return;
+    this.gameplayActive = true;
     if (!this.sdk) return;
     this.safeCall(() => this.sdk!.game.gameplayStart?.());
   }
 
   gameplayStop(): void {
+    if (!this.gameplayActive) return;
+    this.gameplayActive = false;
     if (!this.sdk) return;
     this.safeCall(() => this.sdk!.game.gameplayStop?.());
   }
@@ -136,22 +167,40 @@ export class CrazyGamesPlatform {
         resolve({ rewarded: false, played: false });
         return;
       }
+      if (!this.adsAvailable) {
+        resolve({ rewarded: false, played: false });
+        return;
+      }
       let rewarded = false;
+      let settled = false;
+      const finish = (result: { rewarded: boolean; played: boolean }): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve(result);
+      };
+      const timeout = setTimeout(() => finish({ rewarded: false, played: false }), 8000);
       try {
-        this.sdk.ad.requestAd(type, {
+        const ad = this.sdk.ad;
+        if (!ad?.requestAd) {
+          this.adsAvailable = false;
+          finish({ rewarded: false, played: false });
+          return;
+        }
+        ad.requestAd(type, {
           adStarted: () => undefined,
           adFinished: () => {
             this.lastAdTime = now;
             if (type === 'rewarded') rewarded = true;
-            resolve({ rewarded, played: true });
+            finish({ rewarded, played: true });
           },
-          adError: () => resolve({ rewarded: false, played: false }),
+          adError: () => finish({ rewarded: false, played: false }),
         });
       } catch {
-        // Disabled environment throws on `sdk.ad` access — disable for future calls.
-        this.sdk = null;
-        this.available = false;
-        resolve({ rewarded: false, played: false });
+        // Ads may be disabled in Basic Launch / QA while the rest of the SDK
+        // remains valid. Keep game/data/user calls alive.
+        this.adsAvailable = false;
+        finish({ rewarded: false, played: false });
       }
     });
   }

@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" width="1280" height="720">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0a0524"/>
+      <stop offset="1" stop-color="#03040a"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00f3ff"/>
+      <stop offset="0.5" stop-color="#c566ff"/>
+      <stop offset="1" stop-color="#ff2bff"/>
+    </linearGradient>
+    <linearGradient id="you" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#00f3ff" stop-opacity="0.65"/>
+      <stop offset="1" stop-color="#00f3ff" stop-opacity="0.15"/>
+    </linearGradient>
+    <filter id="bloom"><feGaussianBlur stdDeviation="4"/></filter>
+  </defs>
+
+  <rect width="1280" height="720" fill="url(#bg)"/>
+
+  <!-- Modal -->
+  <rect x="160" y="60" width="960" height="600" rx="22" fill="#070c1c" opacity="0.95" stroke="#00f3ff" stroke-opacity="0.4" stroke-width="1.5"/>
+
+  <!-- Title -->
+  <text x="200" y="140" font-family="'Orbitron', sans-serif" font-weight="900" font-size="44" fill="url(#title)" filter="url(#bloom)">DAILY CHALLENGE</text>
+  <text x="200" y="140" font-family="'Orbitron', sans-serif" font-weight="900" font-size="44" fill="url(#title)">DAILY CHALLENGE</text>
+  <text x="200" y="178" font-family="'Rajdhani', sans-serif" font-weight="500" font-size="17" fill="#a4f0ff">2026-05-20 · Seed 7a3c91 · Every player on Earth gets the same course.</text>
+
+  <!-- Stat tiles -->
+  <g font-family="'Rajdhani', sans-serif">
+    <g transform="translate(200 210)">
+      <rect width="180" height="80" rx="12" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.12"/>
+      <rect width="180" height="2" fill="#00f3ff" opacity="0.55"/>
+      <text x="14" y="28" font-size="11" letter-spacing="2" fill="#a4f0ff" font-weight="700">YOUR BEST TODAY</text>
+      <text x="14" y="62" font-size="22" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">36,420</text>
+    </g>
+    <g transform="translate(395 210)">
+      <rect width="180" height="80" rx="12" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.12"/>
+      <rect width="180" height="2" fill="#00f3ff" opacity="0.55"/>
+      <text x="14" y="28" font-size="11" letter-spacing="2" fill="#a4f0ff" font-weight="700">YOUR RANK</text>
+      <text x="14" y="62" font-size="22" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">#12</text>
+    </g>
+    <g transform="translate(590 210)">
+      <rect width="180" height="80" rx="12" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.12"/>
+      <rect width="180" height="2" fill="#00f3ff" opacity="0.55"/>
+      <text x="14" y="28" font-size="11" letter-spacing="2" fill="#a4f0ff" font-weight="700">RANKED</text>
+      <text x="14" y="62" font-size="22" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">SUBMITTED</text>
+    </g>
+    <g transform="translate(785 210)">
+      <rect width="295" height="80" rx="12" fill="#ffffff" fill-opacity="0.04" stroke="#ffffff" stroke-opacity="0.12"/>
+      <rect width="295" height="2" fill="#00f3ff" opacity="0.55"/>
+      <text x="14" y="28" font-size="11" letter-spacing="2" fill="#a4f0ff" font-weight="700">NEXT DAILY</text>
+      <text x="14" y="62" font-size="22" font-family="'Orbitron', sans-serif" font-weight="900" fill="#00f3ff">12:47:09</text>
+    </g>
+  </g>
+
+  <!-- Leaderboard rows -->
+  <g transform="translate(200 320)" font-family="'Rajdhani', sans-serif">
+    <rect width="880" height="270" rx="12" fill="#02050c" opacity="0.85" stroke="#ffffff" stroke-opacity="0.08"/>
+    <g transform="translate(14 18)" font-size="15">
+      <g><text x="0" y="0" fill="#ffd400" font-weight="800">#1</text><text x="60" y="0" fill="#eaffff" font-weight="700">SOLAR_X</text><text x="850" y="0" text-anchor="end" fill="#ffffff" font-weight="800">62,810</text></g>
+      <g transform="translate(0 30)"><text x="0" y="0" fill="#a4f0ff" font-weight="800">#2</text><text x="60" y="0" fill="#eaffff" font-weight="700">APEX_pro</text><text x="850" y="0" text-anchor="end" fill="#ffffff" font-weight="800">58,440</text></g>
+      <g transform="translate(0 60)"><text x="0" y="0" fill="#a4f0ff" font-weight="800">#3</text><text x="60" y="0" fill="#eaffff" font-weight="700">NOVA99</text><text x="850" y="0" text-anchor="end" fill="#ffffff" font-weight="800">52,008</text></g>
+      <g transform="translate(0 90)"><text x="0" y="0" fill="#eaffff" font-weight="700">#7</text><text x="60" y="0" fill="#eaffff" font-weight="600">PYRE_v2</text><text x="850" y="0" text-anchor="end" fill="#eaffff" font-weight="700">41,990</text></g>
+      <!-- You highlighted -->
+      <g transform="translate(-10 110)">
+        <rect width="855" height="32" rx="8" fill="url(#you)"/>
+        <text x="10" y="22" fill="#001015" font-weight="800">#12</text>
+        <text x="70" y="22" fill="#001015" font-weight="800">PILOT_NEO</text>
+        <text x="845" y="22" text-anchor="end" fill="#001015" font-weight="900">36,420</text>
+      </g>
+      <g transform="translate(0 165)"><text x="0" y="0" fill="#a4f0ff" font-weight="600">#13</text><text x="60" y="0" fill="#eaffff" font-weight="600">GLITCH_HD</text><text x="850" y="0" text-anchor="end" fill="#eaffff" font-weight="700">34,150</text></g>
+      <g transform="translate(0 195)"><text x="0" y="0" fill="#a4f0ff" font-weight="600">#14</text><text x="60" y="0" fill="#eaffff" font-weight="600">RUNE7</text><text x="850" y="0" text-anchor="end" fill="#eaffff" font-weight="700">32,790</text></g>
+      <g transform="translate(0 225)"><text x="0" y="0" fill="#a4f0ff" font-weight="600">#15</text><text x="60" y="0" fill="#eaffff" font-weight="600">VEX01</text><text x="850" y="0" text-anchor="end" fill="#eaffff" font-weight="700">30,002</text></g>
+    </g>
+  </g>
+
+  <!-- Disclaimer -->
+  <text x="200" y="608" font-family="'Rajdhani', sans-serif" font-size="11" fill="#a4f0ff" opacity="0.6">Showing 38 real players blended with deterministic bots; cross-device via cloud save.</text>
+
+  <!-- CTA -->
+  <g transform="translate(200 624)" font-family="'Orbitron', sans-serif">
+    <rect width="180" height="36" rx="18" fill="#00f3ff"/>
+    <text x="90" y="24" font-weight="700" font-size="13" letter-spacing="2" text-anchor="middle" fill="#001015">PRACTICE RUN</text>
+  </g>
+  <g transform="translate(400 624)" font-family="'Orbitron', sans-serif">
+    <rect width="100" height="36" rx="18" fill="none" stroke="#ffffff" stroke-opacity="0.25"/>
+    <text x="50" y="24" font-weight="700" font-size="13" letter-spacing="2" text-anchor="middle" fill="#eaffff">BACK</text>
+  </g>
+</svg>

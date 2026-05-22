@@ -15,6 +15,11 @@ export interface PlayerInputState {
    * positioned but hasn't committed to a hook shot.
    */
   aimPoint?: Vec2 | null;
+  /**
+   * When true, the rope is gently reeled in automatically (mobile gamefeel).
+   * Has lower priority than explicit reel input or pointerDown reel.
+   */
+  autoReel?: boolean;
 }
 
 export interface PlayerEvents {
@@ -130,6 +135,15 @@ export class Player {
         }
         if (input.pointerDown) this.hook.reel(-1, dt);
         else if (input.reel !== 0) this.hook.reel(input.reel, dt);
+        else if (input.autoReel) {
+          // Passive auto-reel on mobile: slowly pulls the player toward the
+          // anchor so they can focus on aiming the next throw. Weaker than
+          // manual reel so the player can still override with reel-out.
+          this.hook.ropeLength = Math.max(
+            PHYSICS.ropeMinLength,
+            this.hook.ropeLength - PHYSICS.autoReelSpeed * dt,
+          );
+        }
         this.hook.applyTension(this.pos, this.vel, dt);
 
         // Tangent input from horizontal movement
