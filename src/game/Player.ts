@@ -64,6 +64,12 @@ export class Player {
   shield = 0;
   /** Frames remaining for the magnet pickup effect. */
   magnetFrames = 0;
+  /**
+   * When true the player uses the spin-and-release mechanic: the hook
+   * auto-attaches to nearby grapple points and applies a rigid-rod orbital
+   * constraint. Bots leave this false and keep the projectile hook model.
+   */
+  useAutoAttach = false;
   /** Tracks near-miss debounce per obstacle id. */
   private nearMissed = new Set<number>();
 
@@ -102,13 +108,26 @@ export class Player {
     this.vel.y += PHYSICS.gravity * dt;
     this.vel.scale(Math.pow(PHYSICS.airDrag, dt));
 
-    // Fire hook
-    if (input.hookTarget) {
+    // Tick the reattach cooldown every frame.
+    this.hook.updateCooldown(dt);
+
+    // Fire hook (legacy projectile model — used by bots).
+    if (!this.useAutoAttach && input.hookTarget) {
       const result = this.hook.shoot(this.pos, input.hookTarget);
       if (result.fired) {
         this.events.onHookFire();
       }
     }
+
+    // Auto-attach (spin-and-release mechanic — human player only).
+    if (this.useAutoAttach && this.hook.state === 'idle') {
+      const ev = this.hook.tryAutoAttach(this.pos, world.obstacles, PHYSICS.orbitAttachRange);
+      if (ev) {
+        if (ev.obstacle.kind === 'unstable') world.triggerUnstable(ev.obstacle);
+        this.events.onHookConnect(ev);
+      }
+    }
+
     if (input.releaseHook && this.hook.state === 'attached') {
       this.vel.scale(PHYSICS.releaseBoost);
       this.events.onHookRelease(this.vel);
@@ -133,20 +152,25 @@ export class Player {
           const dx = obs.x - obs.lastX;
           this.hook.position.x += dx;
         }
-        if (input.pointerDown) this.hook.reel(-1, dt);
-        else if (input.reel !== 0) this.hook.reel(input.reel, dt);
-        else if (input.autoReel) {
-          // Passive auto-reel on mobile: slowly pulls the player toward the
-          // anchor so they can focus on aiming the next throw. Weaker than
-          // manual reel so the player can still override with reel-out.
-          this.hook.ropeLength = Math.max(
-            PHYSICS.ropeMinLength,
-            this.hook.ropeLength - PHYSICS.autoReelSpeed * dt,
-          );
+        if (this.useAutoAttach) {
+          // Spin-and-release: rigid rod for full circular orbits.
+          // Reel changes the orbit radius (smaller = faster spin).
+          if (input.reel !== 0) this.hook.reel(input.reel, dt);
+          this.hook.applyRigidConstraint(this.pos, this.vel, dt);
+        } else {
+          // Legacy spring model used by bots.
+          if (input.pointerDown) this.hook.reel(-1, dt);
+          else if (input.reel !== 0) this.hook.reel(input.reel, dt);
+          else if (input.autoReel) {
+            this.hook.ropeLength = Math.max(
+              PHYSICS.ropeMinLength,
+              this.hook.ropeLength - PHYSICS.autoReelSpeed * dt,
+            );
+          }
+          this.hook.applyTension(this.pos, this.vel, dt);
         }
-        this.hook.applyTension(this.pos, this.vel, dt);
 
-        // Tangent input from horizontal movement
+        // Tangential force from horizontal steering (works for both modes).
         if (input.moveX !== 0) {
           const toAnchorX = this.hook.position.x - this.pos.x;
           const toAnchorY = this.hook.position.y - this.pos.y;
@@ -154,8 +178,9 @@ export class Player {
           if (dist > 1e-3) {
             const nx = toAnchorX / dist;
             const ny = toAnchorY / dist;
-            this.vel.x += -ny * input.moveX * 0.12 * dt;
-            this.vel.y += nx * input.moveX * 0.12 * dt;
+            const force = this.useAutoAttach ? 0.15 : 0.12;
+            this.vel.x += -ny * input.moveX * force * dt;
+            this.vel.y += nx * input.moveX * force * dt;
           }
         }
       }
@@ -165,14 +190,14 @@ export class Player {
     const speed = this.vel.len();
     if (speed > PHYSICS.maxSpeed) this.vel.scale(PHYSICS.maxSpeed / speed);
 
-    // Dash. Direction priority on mobile/desktop alike:
-    //   1. Explicit hookTarget (just-fired shot direction)
+    // Dash. Direction priority:
+    //   1. Explicit hookTarget (bot projectile shot direction)
     //   2. Current aim point (finger held / mouse positioned)
     //   3. Velocity direction if moving fast enough (forward boost)
     //   4. Straight up (fallback for a stationary player)
     if (input.dashRequested && this.dashCharges > 0 && this.hook.state !== 'attached') {
       const dir = new Vec2(0, -1);
-      const aim = input.hookTarget ?? input.aimPoint ?? null;
+      const aim = this.useAutoAttach ? (input.aimPoint ?? null) : (input.hookTarget ?? input.aimPoint ?? null);
       if (aim) {
         dir.set(aim.x - this.pos.x, aim.y - this.pos.y);
         if (dir.lenSq() < 1e-3) dir.set(0, -1);

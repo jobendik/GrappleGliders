@@ -48,25 +48,19 @@ const isTouchDevice = (): boolean =>
 const TOUCH_STEPS: TutorialStep[] = [
   {
     message:
-      'Drag toward a glowing platform. A reticle snaps to it — lift your finger to fire your grapple. No lava yet, take your time.',
+      'Fly close to a glowing platform — you\'ll automatically latch on and start spinning! No lava yet, take your time.',
     require: 'hookConnect',
     fallbackMs: null,
   },
   {
     message:
-      'You\'re hanging on the rope. Tap the ◀ and ▶ buttons (or tilt) to SWING left and right — that\'s how you climb.',
-    require: 'swing',
-    fallbackMs: 30000,
-  },
-  {
-    message:
-      'At the peak of your swing, TAP anywhere to release the hook. You\'ll fling forward — perfect for reaching the next platform.',
+      'TAP anywhere to release at the right moment and fly upward! Time your tap when you\'re heading UP.',
     require: 'hookRelease',
     fallbackMs: null,
   },
   {
     message:
-      'GOAL: Climb as high as you can! Grapple → swing → release, repeat. Reach 120m to graduate from the tutorial.',
+      'GOAL: Climb as high as you can! Latch on → spin → tap to release, repeat. Reach 120m to graduate.',
     require: 'altitude',
     threshold: 120,
     fallbackMs: null,
@@ -76,25 +70,19 @@ const TOUCH_STEPS: TutorialStep[] = [
 const DESKTOP_STEPS: TutorialStep[] = [
   {
     message:
-      'Click and HOLD on a glowing platform to fire your grapple. Take your time — no lava during the tutorial.',
+      'Fly close to a glowing platform — you\'ll automatically latch on and start spinning! No lava yet, take your time.',
     require: 'hookConnect',
     fallbackMs: null,
   },
   {
     message:
-      'You\'re hanging on the rope. Press A / D (or ← / →) to SWING left and right — that\'s how you climb.',
-    require: 'swing',
-    fallbackMs: 30000,
-  },
-  {
-    message:
-      'At the peak of your swing, RELEASE the mouse to fling forward. Bigger swings launch you higher.',
+      'CLICK (or press Space) to release at the right moment and fling upward! Release when you\'re heading UP.',
     require: 'hookRelease',
     fallbackMs: null,
   },
   {
     message:
-      'GOAL: Climb as high as you can! Grapple → swing → release, repeat. Reach 120m to graduate from the tutorial.',
+      'GOAL: Climb as high as you can! Latch on → spin → release, repeat. Reach 120m to graduate.',
     require: 'altitude',
     threshold: 120,
     fallbackMs: null,

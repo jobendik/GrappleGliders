@@ -669,115 +669,28 @@ export class Game {
 
     // Build input for player.
     //
-    // Mobile uses a fundamentally different gesture than desktop:
-    //   - Desktop: click & hold = fire instantly + stay attached + reel in
-    //   - Mobile:  drag = aim (reticle visible), release = fire
-    //              tap while attached = release hook
-    //              dedicated reel buttons = climb / pay out rope
-    //
-    // The mobile model removes the "finger covers the screen during a swing"
-    // problem and lets the player see what they're committing to before they
-    // commit. Aim assist snaps to the nearest grappleable obstacle within a
-    // generous radius so chubby thumbs don't have to be precise.
+    // Spin-and-release mechanic: the hook auto-attaches when near a grapple
+    // point; a single tap / click releases it. No aiming required.
     const worldPointer = this.camera.screenToWorld(snap.pointer.x, snap.pointer.y);
     const dashRequested =
       snap.dashJustPressed || (snap.twoFingerSwipeDown && this.player.dashCharges > 0);
 
-    let hookTarget: Vec2 | null = null;
     let releaseHookFlag = false;
-    let aimPointForDash: Vec2 | null = null;
-    let playerPointerDown = snap.pointerDown;
-
-    if (snap.isTouch) {
-      // While idle, dragging shows the aim reticle. The shot fires on release.
-      if (this.player.hook.state === 'idle' && snap.pointerDown) {
-        const snapped = this.findAimSnap(worldPointer);
-        this.aimActive = true;
-        this.aimWorldX = (snapped ?? worldPointer).x;
-        this.aimWorldY = (snapped ?? worldPointer).y;
-        this.aimSnapTarget = snapped
-          ? { x: snapped.x, y: snapped.y, obstacle: snapped.obstacle }
-          : null;
-        // Subtle haptic when the snap acquires a new target.
-        const snapId = this.aimSnapTarget?.obstacle.id ?? null;
-        if (snapId !== null && snapId !== this.lastAimSnapId) {
-          this.haptics.trigger('nearMiss');
-        }
-        this.lastAimSnapId = snapId;
-        aimPointForDash = new Vec2(this.aimWorldX, this.aimWorldY);
-      } else {
-        this.aimActive = false;
-        this.aimSnapTarget = null;
-        this.lastAimSnapId = null;
-      }
-
-      // Commit fire on release if the hook was idle when the press began.
-      if (snap.pointerJustReleased) {
-        if (this.player.hook.state === 'idle' && snap.pointerHoldMs < 4000) {
-          // Quick-tap or drag-and-release — fire toward the (snapped) world point.
-          const snapped = this.findAimSnap(worldPointer);
-          hookTarget = snapped
-            ? new Vec2(snapped.x, snapped.y)
-            : worldPointer;
-        } else if (this.player.hook.state === 'attached') {
-          // Tap while attached releases the rope.
-          releaseHookFlag = true;
-        }
-      }
-
-      // On touch, never auto-reel just because a finger is touching — the
-      // dedicated reel buttons are the only way to reel in/out. Otherwise
-      // the player would have to keep their finger on the screen (covering
-      // their view) to climb a swing.
-      playerPointerDown = false;
-    } else {
-      // Desktop: classic hold-to-grapple. Click commits instantly.
-      if (snap.pointerJustDown) {
-        const snapped = this.findAimSnap(worldPointer);
-        hookTarget = snapped ? new Vec2(snapped.x, snapped.y) : worldPointer;
-      }
-      releaseHookFlag = snap.pointerJustReleased;
-      if (snap.pointerDown) aimPointForDash = worldPointer;
-      this.aimActive = false;
-      this.aimSnapTarget = null;
+    // Release the hook on pointer-down (most responsive for timing the release).
+    if (snap.pointerJustDown && this.player.hook.state === 'attached') {
+      releaseHookFlag = true;
     }
 
     const playerInput: PlayerInputState = {
       moveX: snap.moveX,
       reel: snap.reel,
-      pointerDown: playerPointerDown,
+      pointerDown: false,
       dashRequested,
-      hookTarget,
+      hookTarget: null,
       releaseHook: releaseHookFlag,
-      aimPoint: aimPointForDash,
-      // On touch devices, slowly reel in automatically once the hook is
-      // attached so the player is steadily pulled upward without pressing
-      // the reel button. Manual reel input still takes priority in Player.update().
-      autoReel: snap.isTouch,
+      aimPoint: snap.pointerDown ? worldPointer : null,
+      autoReel: false,
     };
-    // Easy Mode auto-pump: while attached, if the player isn't actively
-    // steering, the game gently builds the pendulum based on where the
-    // player is relative to the anchor. This means a casual player who
-    // grapples and just holds (or doesn't touch keys at all) still feels
-    // forward momentum, instead of dead-hanging at the anchor's equilibrium
-    // point waiting to figure out the controls.
-    //
-    // Disabled during the tutorial flow so the "swing left and right"
-    // teaching step actually requires the player to press A/D — they
-    // need to learn the manual input exists before the assist takes over.
-    if (
-      this.save.data.settings.easyMode &&
-      !this.inTutorialFlow &&
-      this.player.hook.state === 'attached' &&
-      playerInput.moveX === 0
-    ) {
-      const ropeDx = this.player.pos.x - this.player.hook.position.x;
-      // Pump *away* from the rope so the pendulum opens up rather than
-      // settling. Magnitude is small (0.45) so a skilled player who DOES
-      // press A/D still feels in control — the assist is additive, not
-      // overriding.
-      playerInput.moveX = ropeDx >= 0 ? 0.45 : -0.45;
-    }
     if (dashRequested && this.player.dashCharges > 0) this.dashCount += 1;
 
     this.player.update(dt, playerInput, this.world, this.killY);
@@ -794,7 +707,7 @@ export class Game {
       this.player.invuln = 90;
       this.player.hook.reset();
       this.camera.reset(this.player.pos);
-      this.toast.show('Aim upward — click and HOLD a glowing platform.');
+      this.toast.show('Fly upward — approach a glowing platform to latch on and spin!');
     }
 
     // Swing detection — used by the tutorial swing step. The player is
@@ -1203,11 +1116,14 @@ export class Game {
       this.drawBossDebris();
       // Particles
       this.particles.draw(this.renderer.ctx, this.lowQuality);
-      // Aim assist reticle — shows where the next grapple will fire while the
-      // player is dragging on mobile. Drawn over particles so it stays legible
-      // against busy backgrounds.
-      if (this.aimActive) {
-        this.drawAimAssist();
+      // Orbit indicator — shows the orbit ring the player will spin on when
+      // they approach the nearest grapple point. Drawn over particles.
+      if (this.player.hook.state === 'idle') {
+        this.drawOrbitIndicator();
+      }
+      // Draw the player's current orbit arc when attached.
+      if (this.player.hook.state === 'attached' && !this.lowQuality) {
+        this.hookRenderer.drawOrbitArc(this.renderer.ctx, this.player.hook, this.framesSinceStart);
       }
       // Floating texts
       this.screen.drawWorld(this.renderer.ctx);
@@ -1374,87 +1290,69 @@ export class Game {
   }
 
   /**
-   * Draws the aim reticle + assist line while the player is dragging to aim
-   * (touch-only path). Visible feedback is the whole point of the mobile
-   * overhaul — players should never have to commit to a shot blindly.
+   * Draws a dashed orbit preview ring around the nearest grappleable obstacle.
+   * Pulses brighter when the player is within auto-attach range so they know
+   * a latch is imminent.
    */
-  private drawAimAssist(): void {
-    if (!this.player) return;
+  private drawOrbitIndicator(): void {
+    if (!this.player || !this.world) return;
     const ctx = this.renderer.ctx;
     const px = this.player.pos.x;
     const py = this.player.pos.y;
-    const ax = this.aimWorldX;
-    const ay = this.aimWorldY;
-    const snapped = this.aimSnapTarget !== null;
-    const theme = this.themes.current;
-    const color = snapped ? theme.accent : '#ffffff';
+    const cooldownId = this.player.hook.lastAttachedId;
+    const hasCooldown = this.player.hook.reattachCooldown > 0;
+
+    let bestDist = PHYSICS.orbitAttachRange * 1.6;
+    let bestCx = 0;
+    let bestCy = 0;
+    let found = false;
+    for (const obs of this.world.obstacles) {
+      if (!obs.grappleable) continue;
+      if (obs.id === cooldownId && hasCooldown) continue;
+      const cx = obs.x + obs.width / 2;
+      const cy = obs.y + obs.height / 2;
+      const dist = Math.hypot(cx - px, cy - py);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestCx = cx;
+        bestCy = cy;
+        found = true;
+      }
+    }
+    if (!found) return;
+
+    const attachable = bestDist <= PHYSICS.orbitAttachRange;
     const t = this.framesSinceStart * 0.12;
-    const pulse = 0.6 + Math.sin(t) * 0.4;
+    const pulse = 0.55 + Math.sin(t) * 0.45;
+    const orbitR = Math.max(PHYSICS.ropeMinLength, Math.min(PHYSICS.ropeMaxLength, bestDist));
 
     ctx.save();
-    // Dashed line from player toward the aim point — moving dash offset to
-    // sell "energy traveling along the line".
-    ctx.setLineDash([6, 8]);
-    ctx.lineDashOffset = -this.framesSinceStart * 0.6;
-    ctx.strokeStyle = snapped
-      ? `rgba(0,243,255,${0.7 + pulse * 0.2})`
-      : 'rgba(255,255,255,0.42)';
-    ctx.lineWidth = snapped ? 2.2 : 1.4;
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Orbit arc: brighter/cyan when attachable, faint white when approaching.
+    const arcAlpha = attachable ? 0.5 * pulse : 0.15 * pulse;
+    ctx.strokeStyle = attachable
+      ? `rgba(0,243,255,${arcAlpha})`
+      : `rgba(255,255,255,${arcAlpha})`;
+    ctx.lineWidth = attachable ? 1.6 : 0.9;
+    ctx.setLineDash([8, 10]);
+    ctx.lineDashOffset = -this.framesSinceStart * 0.5;
     ctx.beginPath();
-    ctx.moveTo(px, py);
-    // Clip the line short of the reticle so it doesn't visually clash with
-    // the ring.
-    const dx = ax - px;
-    const dy = ay - py;
-    const dist = Math.hypot(dx, dy);
-    if (dist > 0) {
-      const stopT = Math.max(0, (dist - 22) / dist);
-      ctx.lineTo(px + dx * stopT, py + dy * stopT);
-    }
+    ctx.arc(bestCx, bestCy, orbitR, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Reticle ring
-    ctx.lineWidth = snapped ? 2.4 : 1.6;
-    ctx.strokeStyle = color;
-    const r = snapped ? 18 + pulse * 4 : 14;
-    ctx.beginPath();
-    ctx.arc(ax, ay, r, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Crosshair tick marks
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = snapped ? color : 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 2;
-    const tick = snapped ? 8 : 5;
-    ctx.beginPath();
-    ctx.moveTo(ax - r - tick, ay);
-    ctx.lineTo(ax - r + 2, ay);
-    ctx.moveTo(ax + r - 2, ay);
-    ctx.lineTo(ax + r + tick, ay);
-    ctx.moveTo(ax, ay - r - tick);
-    ctx.lineTo(ax, ay - r + 2);
-    ctx.moveTo(ax, ay + r - 2);
-    ctx.lineTo(ax, ay + r + tick);
-    ctx.stroke();
-
-    // Inner dot
-    ctx.fillStyle = snapped ? color : 'rgba(255,255,255,0.9)';
-    ctx.beginPath();
-    ctx.arc(ax, ay, snapped ? 3 : 2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Range warning: if the raw pointer is outside the max range, draw a
-    // faint "out of range" indicator so the player understands why nothing
-    // is happening when they tap a far-away tower.
-    if (dist > PHYSICS.hookMaxRange) {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = 'rgba(255,80,80,0.7)';
-      ctx.lineWidth = 1.6;
+    // Guide line from player to the nearest grapple point when close.
+    if (attachable) {
+      const lineAlpha = 0.35 * pulse;
+      ctx.strokeStyle = `rgba(0,243,255,${lineAlpha})`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 8]);
       ctx.beginPath();
-      const cap = PHYSICS.hookMaxRange;
-      ctx.arc(px, py, cap, 0, Math.PI * 2);
+      ctx.moveTo(px, py);
+      ctx.lineTo(bestCx, bestCy);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     ctx.restore();
@@ -2616,6 +2514,7 @@ export class Game {
       easyStart,
     });
     this.player = new Player(0, -120);
+    this.player.useAutoAttach = true;
     this.player.setEvents({
       onHookFire: () => {
         this.sfx.hookFire();
@@ -3012,12 +2911,12 @@ export class Game {
       let hint: string;
       if (isTutorialEndless) {
         hint = isTouch
-          ? 'Tutorial mode — no lava. Drag toward a glowing platform, release to grapple.'
-          : 'Tutorial mode — no lava. Click and HOLD a glowing platform to grapple.';
+          ? 'Tutorial mode — no lava. Fly close to a glowing platform to latch on and spin!'
+          : 'Tutorial mode — no lava. Fly close to a glowing platform to latch on and spin!';
       } else if (isTouch) {
-        hint = 'Drag toward a glowing platform · release to grapple';
+        hint = 'Fly near a glowing platform to latch on — TAP to release and fly up!';
       } else {
-        hint = 'Hold mouse on a glowing platform · release to fling';
+        hint = 'Fly near a glowing platform to latch on — CLICK to release and fly up!';
       }
       this.readyOverlay.show({
         inputHint: hint,
