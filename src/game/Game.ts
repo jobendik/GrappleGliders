@@ -353,10 +353,16 @@ export class Game {
   }
 
   private bootPlatform(): void {
-    // Open the menu and start the render loop immediately. The CrazyGames SDK
-    // can take 10s to settle into its "disabled" state when this is not the
-    // CG portal — we don't want anything on the boot path waiting on it.
-    this.openMainMenu();
+    // Land directly in gameplay — CrazyGames' QA auto-detector scans a brief
+    // window after load for sdkGameplayStart, and any path that requires a
+    // menu click can miss that window. Booting straight into Endless Climb
+    // also satisfies CG's "land directly in gameplay" guideline (0 clicks).
+    // The main menu remains reachable from the pause overlay (Exit) and the
+    // game over screen.
+    this.startMode(GameMode.EndlessClimb);
+    if (!this.save.data.settings.tutorialSeen) {
+      this.startTutorial();
+    }
     this.startLoop();
 
     void (async () => {
@@ -380,8 +386,6 @@ export class Game {
           this.save.data.playerNameSet = true;
           this.save.save();
           this.toast.show(`Signed in as ${this.save.data.playerName}.`);
-          // If the main menu is open, refresh it so the new name shows.
-          if (this.state === GameState.MainMenu) this.openMainMenu();
         }
       }
     })();
