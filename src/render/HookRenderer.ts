@@ -186,6 +186,33 @@ export class HookRenderer {
     }
   }
 
+  /**
+   * Draws a faint dashed circle showing the player's current orbital path
+   * while attached. Called by Game.ts for the human player only.
+   */
+  drawOrbitArc(
+    ctx: CanvasRenderingContext2D,
+    hook: GrapplingHook,
+    time: number,
+  ): void {
+    if (hook.state !== 'attached') return;
+    const cx = hook.position.x;
+    const cy = hook.position.y;
+    const r = hook.ropeLength;
+    const pulse = 0.45 + Math.sin(time * 0.14) * 0.3;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = `rgba(255,255,255,${0.12 * pulse})`;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 14]);
+    ctx.lineDashOffset = -time * 0.35;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
   private drawCable(
     ctx: CanvasRenderingContext2D,
     start: Vec2,

@@ -53,6 +53,8 @@ export interface CrazyUserModule {
 
 export interface CrazyGamesSDK {
   init: () => Promise<void>;
+  /** Returns `'local' | 'crazygames' | 'disabled'` once init() resolves. */
+  getEnvironment?: () => string;
   game: CrazyGameModule;
   ad: CrazyAdsModule;
   data: CrazyDataModule;

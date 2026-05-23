@@ -24,6 +24,21 @@ export interface SaveSettings {
    * precision-aim purists.
    */
   aimAssist: boolean;
+  /**
+   * Easy Mode: a radical simplification of the core mechanic for casual /
+   * portal players. When on:
+   *   - Aim is effectively automatic — clicking anywhere grapples the
+   *     best platform above you (giant snap radius).
+   *   - Auto-pump assists pendulum-build if you don't press left/right.
+   *   - Lava is slower (0.5 vs 0.94 px/frame) and acceleration is delayed.
+   *
+   * The original game stays available as "Classic Mode" via this toggle.
+   * Defaults ON for new saves; existing players keep whatever they had.
+   *
+   * This is the difference between "the controls fight me" and "I'm
+   * swinging through the sky" for a casual first-time player.
+   */
+  easyMode: boolean;
 }
 
 export interface DailyHistoryEntry {
@@ -102,6 +117,7 @@ const defaultSettings: SaveSettings = {
   tapToggle: false,
   mobileSteering: true,
   aimAssist: true,
+  easyMode: true,
 };
 
 export const defaultSave = (): SaveData => ({

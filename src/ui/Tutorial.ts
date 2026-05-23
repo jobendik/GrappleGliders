@@ -1,19 +1,33 @@
 /**
  * Interactive onboarding. Each step waits for the player to perform the
- * required action (fire a grapple, release it, dash) before advancing, with a
- * timed fallback so anyone stuck on a step still progresses. The UI highlights
- * the relevant button on mobile and shows a clear hint card.
+ * required action (fire a grapple, swing left/right, release, climb) before
+ * advancing. Steps that gate progress have NO fallback timer — they wait
+ * forever, because a CrazyGames-platform first-time player needs to learn
+ * by doing, not by watching the hint disappear before they understand it.
+ *
+ * The game freezes lava entirely while the tutorial is active (see
+ * `Game.inTutorialFlow`), so a player cannot fail out of the tutorial.
  */
 
-export type TutorialAction = 'hookConnect' | 'hookRelease' | 'dash' | 'altitude';
+export type TutorialAction =
+  | 'hookConnect'
+  | 'hookRelease'
+  | 'swing'
+  | 'dash'
+  | 'altitude';
 
 interface TutorialStep {
   /** Hint message shown to the player. */
   message: string;
   /** Action required to advance. `null` means timed only. */
   require: TutorialAction | null;
-  /** ms before the step auto-advances even if the action wasn't completed. */
-  fallbackMs: number;
+  /**
+   * ms before the step auto-advances even if the action wasn't completed.
+   * `null` means the step waits indefinitely. Use `null` for any step
+   * that gates real progress so the prompt never disappears while the
+   * player is still figuring out what to do.
+   */
+  fallbackMs: number | null;
   /** Optional CSS selector for an element to highlight while the step is active. */
   highlight?: string;
   /** Optional altitude threshold for the 'altitude' action. */
@@ -33,50 +47,45 @@ const isTouchDevice = (): boolean =>
 
 const TOUCH_STEPS: TutorialStep[] = [
   {
-    message: 'Drag from anywhere — a reticle snaps to glowing platforms. Lift your finger to fire your grapple.',
+    message:
+      'Fly close to a glowing platform — you\'ll automatically latch on and start spinning! No lava yet, take your time.',
     require: 'hookConnect',
-    fallbackMs: 15000,
+    fallbackMs: null,
   },
   {
-    message: 'Once attached, use the ▲ button to climb the rope, or ▼ to swing wider. Tap anywhere to release.',
+    message:
+      'TAP anywhere to release at the right moment and fly upward! Time your tap when you\'re heading UP.',
     require: 'hookRelease',
-    fallbackMs: 14000,
+    fallbackMs: null,
   },
   {
-    message: 'Tap the DASH button to burst forward. Your aim direction matters — finger held = dash that way.',
-    require: 'dash',
-    fallbackMs: 12000,
-    highlight: '.touch-btn.dash',
-  },
-  {
-    message: 'Lava is rising — climb fast. Reach 100m to finish the tutorial.',
+    message:
+      'GOAL: Climb as high as you can! Latch on → spin → tap to release, repeat. Reach 120m to graduate.',
     require: 'altitude',
-    threshold: 100,
-    fallbackMs: 30000,
+    threshold: 120,
+    fallbackMs: null,
   },
 ];
 
 const DESKTOP_STEPS: TutorialStep[] = [
   {
-    message: 'Aim at a glowing platform — click & HOLD to fire your grapple.',
+    message:
+      'Fly close to a glowing platform — you\'ll automatically latch on and start spinning! No lava yet, take your time.',
     require: 'hookConnect',
-    fallbackMs: 15000,
+    fallbackMs: null,
   },
   {
-    message: 'Now RELEASE to fling forward. Bigger swings launch you higher.',
+    message:
+      'CLICK (or press Space) to release at the right moment and fling upward! Release when you\'re heading UP.',
     require: 'hookRelease',
-    fallbackMs: 12000,
+    fallbackMs: null,
   },
   {
-    message: 'Press SPACE to dash — burst through gaps. (W/S reels the rope in or out while attached.)',
-    require: 'dash',
-    fallbackMs: 12000,
-  },
-  {
-    message: 'Lava is rising — climb fast. Reach 100m to finish the tutorial.',
+    message:
+      'GOAL: Climb as high as you can! Latch on → spin → release, repeat. Reach 120m to graduate.',
     require: 'altitude',
-    threshold: 100,
-    fallbackMs: 30000,
+    threshold: 120,
+    fallbackMs: null,
   },
 ];
 
@@ -146,7 +155,9 @@ export class Tutorial {
       // Defer one frame so we pick up freshly-created touch controls.
       requestAnimationFrame(() => this.applyHighlight(step.highlight!));
     }
-    this.timer = setTimeout(() => this.advance(), step.fallbackMs);
+    if (step.fallbackMs !== null) {
+      this.timer = setTimeout(() => this.advance(), step.fallbackMs);
+    }
   }
 
   private applyHighlight(selector: string): void {

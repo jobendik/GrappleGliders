@@ -187,6 +187,13 @@ export class SettingsScreen {
       toggles.appendChild(card);
     };
 
+    renderToggle('Easy Mode', 'easyMode', (next) => {
+      toast.show(
+        next
+          ? 'Easy Mode on — auto-aim + auto-pump + slower lava.'
+          : 'Classic Mode — precision aim, full difficulty.',
+      );
+    });
     renderToggle('Haptics', 'haptics');
     renderToggle('Reduced Motion', 'reducedMotion');
     renderToggle('Show Ghost', 'showGhost');

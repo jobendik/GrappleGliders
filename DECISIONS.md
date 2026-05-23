@@ -40,6 +40,28 @@ To keep saves tiny, ghost frames are encoded as flat `[px, py, hx, hy, hookActiv
 
 Loading the SDK from CDN is wrapped in a 3-second timeout in `src/platform/CrazyGamesSDK.ts`. On GitHub Pages — where the SDK is not in the page — the timeout fires fast and the game proceeds without ads, cloud save, or game-loop signals. Every SDK call is null-guarded.
 
+`init()` is raced against a per-environment timeout (2.5s standalone / 15s iframe) because the SDK's parent-frame handshake hangs ~10s on non-CG hosts before resolving as `disabled`. The iframe timeout is intentionally generous so legitimate CG iframes don't get marked unavailable on slow connections — too short, and the SDK becomes a no-op and CG's "First gameplay start" check never sees an event.
+
+## 8a. CrazyGames lifecycle — menu-first, with queued events
+
+The intended lifecycle (per https://docs.crazygames.com/sdk/game/) is:
+
+```
+loadingStart  ─[boot]─  loadingStop  ─[menu]─  gameplayStart  ─[run]─  gameplayStop  ─[menu]─  gameplayStart …
+```
+
+- The **main menu is NOT gameplay** — `gameplayStart` only fires when the player enters an actual playable mode via `Game.startMode(...)`.
+- The "initial download size" metric CrazyGames reports is measured from page load to the first `gameplayStart()`. Sitting in the menu doesn't add bytes to that count as long as the menu itself doesn't trigger new downloads.
+- Pause, settings, game-over, and return-to-menu all call `gameplayStop()`; resume/restart calls `gameplayStart()` again.
+
+Two non-obvious choices in `CrazyGamesPlatform`:
+
+1. **Pre-init event queue**: lifecycle calls (`loadingStart`/`loadingStop`/`gameplayStart`/`gameplayStop`) made before `init()` resolves are queued and replayed in order once it does. Without this, a player who starts AND ends a run faster than the iframe handshake would never produce a `gameplayStart` event in the SDK log — silently failing CrazyGames' "First gameplay start" QA check. (This is the failure mode that historically tempted a "skip the menu and auto-start a match" workaround. The queue removes the need.)
+
+2. **`loadingStart` + `loadingStop` are caller-driven**, not synthetic. `bootPlatform()` opens the start of loading, then closes it once the menu is mounted. This represents the real boot work, not an instant zero-width loading phase.
+
+Dev logging is gated on `import.meta.env.DEV` or `?devCrazySDK=1` in the URL. Tags are `[CrazySDK]` for SDK events and `[Boot]` for game-side lifecycle (`menu ready`, `match start requested`, `match started`).
+
 ## 9. Auto-quality downgrade after sustained slow frames
 
 `Game.tick` watches for >22ms frames sustained over ~3 seconds and flips a `lowQuality` flag that disables canvas shadows, halves particles, and skips parallax shading. This is the prompt's "low-end auto-downgrade" requirement implemented in the smallest amount of code possible.

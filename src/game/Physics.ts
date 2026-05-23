@@ -150,8 +150,12 @@ export const PHYSICS = Object.freeze({
   autoReelSpeed: 2.5,
   ropeMinLength: 54,
   ropeMaxLength: 980,
-  releaseBoost: 1.075,
+  releaseBoost: 1.12,
   dashSpeed: 19.5,
   dashCooldownFrames: 86,
   maxDashCharges: 2,
+  /** Radius within which the player auto-attaches to a grapple point (spin-and-release mechanic). */
+  orbitAttachRange: 210,
+  /** Frames before the player can re-attach to the same obstacle after detaching. */
+  orbitReattachCooldown: 35,
 } as const);

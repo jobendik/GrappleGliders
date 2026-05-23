@@ -3,7 +3,7 @@ import { Bot, BOT_PERSONALITIES } from './Bot';
 import { World, type Obstacle } from './World';
 import { Camera } from './Camera';
 import { GameMode, GameState } from './GameState';
-import { PHYSICS, Vec2 } from './Physics';
+import { PHYSICS } from './Physics';
 
 import { ParticleSystem } from '../render/Particles';
 import { ScreenEffects } from '../render/ScreenEffects';
@@ -46,6 +46,7 @@ import { UnlocksScreen } from '../ui/UnlocksScreen';
 import { SettingsScreen } from '../ui/SettingsScreen';
 import { DailyChallengeScreen } from '../ui/DailyChallengeScreen';
 import { Tutorial } from '../ui/Tutorial';
+import { ReadyOverlay } from '../ui/ReadyOverlay';
 import { ToastManager } from '../ui/Toast';
 import { TrickCalloutManager } from '../ui/TrickCallout';
 import { NamePromptScreen } from '../ui/NamePromptScreen';
@@ -71,6 +72,25 @@ const COMBO_RUN_SECONDS = 60;
 
 /** Save-data sub-key for per-course Time Attack records. */
 const timeAttackKey = (courseId: string): string => `${GameMode.TimeAttack}:${courseId}`;
+
+/** Boot-lifecycle diagnostic logs. Mirrors the [CrazySDK] tag so the SDK
+ *  events and the surrounding game lifecycle interleave readably in DevTools.
+ *  Gated on Vite DEV or `?devCrazySDK=1`. */
+const bootLog = ((): ((msg: string) => void) => {
+  let enabled = false;
+  try {
+    enabled = !!import.meta.env?.DEV;
+    if (!enabled) {
+      const params = new URLSearchParams(window.location.search);
+      enabled = params.get('devCrazySDK') === '1';
+    }
+  } catch {
+    enabled = false;
+  }
+  return enabled
+    ? (msg: string) => console.warn(`[Boot] ${msg}`)
+    : (_msg: string) => undefined;
+})();
 
 interface GhostFrame {
   px: number;
@@ -141,6 +161,7 @@ export class Game {
   shareScreen: ShareScreen;
   timeAttackSelect: TimeAttackSelectScreen;
   tutorial: Tutorial | null = null;
+  readyOverlay: ReadyOverlay;
   /** Most recent daily rank (1-based) — surfaced on the share card. */
   private lastDailyRank: number | null = null;
 
@@ -156,6 +177,15 @@ export class Game {
   baseLavaSpeed = 0.94;
   lavaAcceleration = 0.0008;
   framesSinceStart = 0;
+  /**
+   * Standalone elapsed-frames counter used to gate the lava-acceleration
+   * "delay" (default 600 frames, 1200 in Easy Mode). Distinct from
+   * `framesSinceStart` because it's paused during the tutorial flow, so
+   * when the player graduates the delay restarts from scratch instead of
+   * firing instantly off accumulated time. Reset to 0 at the top of each
+   * fresh run via the `framesSinceStart <= dt` guard in updatePlay.
+   */
+  lavaAccelFrames = 0;
   elapsedSeconds = 0;
   paused = false;
 
@@ -171,6 +201,33 @@ export class Game {
 
   /** Stable game-over guard. */
   private gameEnded = false;
+  /**
+   * Pre-roll grace window in "frames at 60fps". While > 0, player physics
+   * and the lava kill-line are frozen so a new player can read the screen
+   * and line up their first shot without being insta-killed by gravity.
+   * Returning players get ~1s; first-time players get ~3s and the overlay
+   * waits for input rather than a timer.
+   */
+  private introFrames = 0;
+  /**
+   * True for the player's first-ever Endless run, until the tutorial
+   * completes. While true:
+   *   - Lava is completely frozen (kill-line never moves up)
+   *   - Tutorial step prompts wait indefinitely for action
+   *   - Death is effectively impossible (no lava + safe-band layout)
+   *
+   * This is the core "make CrazyGames reviewers love the first 60s" fix:
+   * the game is genuinely hard at full difficulty, so first-time players
+   * learn the mechanic in a zero-stakes environment and only enter the
+   * real game once they've demonstrated competence.
+   */
+  private inTutorialFlow = false;
+  /**
+   * Tracks swing direction history while the player is attached. Set bits:
+   * 0 = went left (vel.x < threshold), 1 = went right. Both bits = swung.
+   * Cleared when the hook detaches. Used by the tutorial swing step.
+   */
+  private swingBits = 0;
   /** For combo run mode timer. */
   private modeTimer = 0;
   /** For Time Attack speed-run timer (counts up). */
@@ -234,19 +291,6 @@ export class Game {
   private bossRewardFrames = 0;
 
   /**
-   * Mobile aim state — populated each frame while a touch is being held and
-   * the hook is idle. Drives the on-screen aim reticle + assist line, and is
-   * what gets committed when the player lifts their finger.
-   */
-  private aimActive = false;
-  private aimWorldX = 0;
-  private aimWorldY = 0;
-  /** Snapped aim target (set when aim assist found a grappleable obstacle). */
-  private aimSnapTarget: { x: number; y: number; obstacle: import('./World').Obstacle } | null = null;
-  /** Last obstacle id we snapped to — used to trigger a haptic on acquisition. */
-  private lastAimSnapId: number | null = null;
-
-  /**
    * On-screen reel-in/reel-out buttons for mobile (shown only while hook is
    * attached). The element handle is stored on the touch-controls wrapper
    * via the TouchControlHandles interface.
@@ -306,6 +350,7 @@ export class Game {
     this.namePrompt = new NamePromptScreen(this.overlayRoot);
     this.shareScreen = new ShareScreen(this.overlayRoot);
     this.timeAttackSelect = new TimeAttackSelectScreen(this.overlayRoot);
+    this.readyOverlay = new ReadyOverlay(this.overlayRoot);
 
     this.themes.setTheme(this.save.data.equippedTheme);
     this.background.init(this.renderer.cssWidth, this.renderer.cssHeight);
@@ -353,17 +398,49 @@ export class Game {
   }
 
   private bootPlatform(): void {
-    // Land directly in gameplay — CrazyGames' QA auto-detector scans a brief
-    // window after load for sdkGameplayStart, and any path that requires a
-    // menu click can miss that window. Booting straight into Endless Climb
-    // also satisfies CG's "land directly in gameplay" guideline (0 clicks).
-    // The main menu remains reachable from the pause overlay (Exit) and the
-    // game over screen.
-    this.startMode(GameMode.EndlessClimb);
-    if (!this.save.data.settings.tutorialSeen) {
-      this.startTutorial();
+    // CrazyGames lifecycle: bracket the boot/preload with loadingStart →
+    // loadingStop. The wrapper queues these until init() resolves so they
+    // appear in the SDK log in the correct order. We then open the menu
+    // (which is the first interactive state — NOT gameplay) and let the
+    // player click Play to fire gameplayStart.
+    //
+    // The menu must open synchronously so the player doesn't wait on the
+    // iframe handshake (up to 15s on the CG portal). The cloud adapter and
+    // username are attached in the background; either may fail without
+    // blocking the menu.
+    this.crazy.loadingStart();
+    // 20s belt-and-suspenders watchdog. Matches the proven pattern from
+    // other CrazyGames-shipped games: even if the synchronous menu mount
+    // below crashes mid-flight, the SDK's loading state still closes so
+    // CrazyGames doesn't see an orphan loadingStart in the log. The
+    // wrapper's loadingActive flag makes the normal loadingStop below
+    // idempotent against this fallback.
+    const loadingWatchdog = setTimeout(() => this.crazy.loadingStop(), 20_000);
+    try {
+      // Defensive: a transient render failure here was the most plausible
+      // cause of the "skipped the menu" reviewer report. We catch, log,
+      // and retry on the next frame so the player still lands on a menu
+      // instead of an empty canvas (or worse, live gameplay).
+      try {
+        this.openMainMenu();
+      } catch (err) {
+        bootLog(`menu open failed: ${(err as Error)?.message ?? 'unknown'}`);
+        requestAnimationFrame(() => {
+          try {
+            if (this.state !== GameState.MainMenu) this.openMainMenu();
+          } catch {
+            // Last resort: surface the failure as a toast so the player at
+            // least sees a hint of what's wrong. The canvas is empty but
+            // gameplay never started, which is the correct safe state.
+            this.toast.show('Menu failed to load — please refresh.');
+          }
+        });
+      }
+      this.startLoop();
+    } finally {
+      this.crazy.loadingStop();
+      clearTimeout(loadingWatchdog);
     }
-    this.startLoop();
 
     void (async () => {
       await this.crazy.init();
@@ -386,6 +463,7 @@ export class Game {
           this.save.data.playerNameSet = true;
           this.save.save();
           this.toast.show(`Signed in as ${this.save.data.playerName}.`);
+          if (this.state === GameState.MainMenu) this.openMainMenu();
         }
       }
     })();
@@ -479,6 +557,16 @@ export class Game {
 
   private updatePlay(dt: number, snap: ReturnType<InputManager['snapshot']>): void {
     if (!this.player || !this.world) return;
+    // Pre-roll grace window. While introFrames > 0 the player physics, lava,
+    // and mode timers are all frozen — only ambient world animation runs.
+    // This is the difference between a forgiving first impression and the
+    // original ~0.5s-to-death drop. Returning players get ~1s; first-time
+    // players get ~3s. The ReadyOverlay handles the on-screen badge.
+    if (this.introFrames > 0) {
+      this.introFrames -= dt;
+      this.world.update(dt);
+      return;
+    }
     this.framesSinceStart += dt;
     this.elapsedSeconds += dt / 60;
     this.world.update(dt);
@@ -518,14 +606,40 @@ export class Game {
         return;
       }
     } else if (this.mode === GameMode.EndlessClimb || this.mode === GameMode.DailyChallenge) {
-      // Lava accelerates over time.
-      if (this.framesSinceStart > 600) {
-        this.lavaSpeed += this.lavaAcceleration * dt;
+      // Lava accelerates over time. Suspended during the tutorial flow so
+      // the lava speed remains at its slow easy-start value when the
+      // tutorial completes and real gameplay begins.
+      //
+      // Easy Mode doubles the acceleration delay (600 → 1200 frames =
+      // 20s instead of 10s) AND halves the rate, so the curve from
+      // "comfortable" to "intense" is much gentler — closer to a one-
+      // minute ramp than a fifteen-second one.
+      const accelDelay = this.save.data.settings.easyMode ? 1200 : 600;
+      const accelRate = this.save.data.settings.easyMode
+        ? this.lavaAcceleration * 0.5
+        : this.lavaAcceleration;
+      // Reset the post-tutorial accelerator on the very first frame so
+      // a fresh run doesn't inherit residue from the previous one.
+      if (this.framesSinceStart <= dt) {
+        this.lavaAccelFrames = 0;
+      }
+      if (this.inTutorialFlow) {
+        // Hold the accelerator at zero while the player is still learning
+        // the controls — when they graduate, the 20-second delay restarts
+        // from scratch rather than firing instantly off accumulated time.
+        this.lavaAccelFrames = 0;
+      } else {
+        this.lavaAccelFrames += dt;
+        if (this.lavaAccelFrames > accelDelay) {
+          this.lavaSpeed += accelRate * dt;
+        }
       }
     }
 
-    // Lava (kill line) drifts upward when in modes that use it.
-    if (this.usesLava()) {
+    // Lava (kill line) drifts upward when in modes that use it. Frozen
+    // during the tutorial flow so a brand-new player literally cannot
+    // die from rising lava while they're still learning the controls.
+    if (this.usesLava() && !this.inTutorialFlow) {
       if (this.slowLavaFrames > 0) {
         this.slowLavaFrames -= dt;
         this.killY -= this.lavaSpeed * 0.25 * dt;
@@ -542,95 +656,64 @@ export class Game {
 
     // Build input for player.
     //
-    // Mobile uses a fundamentally different gesture than desktop:
-    //   - Desktop: click & hold = fire instantly + stay attached + reel in
-    //   - Mobile:  drag = aim (reticle visible), release = fire
-    //              tap while attached = release hook
-    //              dedicated reel buttons = climb / pay out rope
-    //
-    // The mobile model removes the "finger covers the screen during a swing"
-    // problem and lets the player see what they're committing to before they
-    // commit. Aim assist snaps to the nearest grappleable obstacle within a
-    // generous radius so chubby thumbs don't have to be precise.
+    // Spin-and-release mechanic: the hook auto-attaches when near a grapple
+    // point; a single tap / click releases it. No aiming required.
     const worldPointer = this.camera.screenToWorld(snap.pointer.x, snap.pointer.y);
     const dashRequested =
       snap.dashJustPressed || (snap.twoFingerSwipeDown && this.player.dashCharges > 0);
 
-    let hookTarget: Vec2 | null = null;
     let releaseHookFlag = false;
-    let aimPointForDash: Vec2 | null = null;
-    let playerPointerDown = snap.pointerDown;
-
-    if (snap.isTouch) {
-      // While idle, dragging shows the aim reticle. The shot fires on release.
-      if (this.player.hook.state === 'idle' && snap.pointerDown) {
-        const snapped = this.findAimSnap(worldPointer);
-        this.aimActive = true;
-        this.aimWorldX = (snapped ?? worldPointer).x;
-        this.aimWorldY = (snapped ?? worldPointer).y;
-        this.aimSnapTarget = snapped
-          ? { x: snapped.x, y: snapped.y, obstacle: snapped.obstacle }
-          : null;
-        // Subtle haptic when the snap acquires a new target.
-        const snapId = this.aimSnapTarget?.obstacle.id ?? null;
-        if (snapId !== null && snapId !== this.lastAimSnapId) {
-          this.haptics.trigger('nearMiss');
-        }
-        this.lastAimSnapId = snapId;
-        aimPointForDash = new Vec2(this.aimWorldX, this.aimWorldY);
-      } else {
-        this.aimActive = false;
-        this.aimSnapTarget = null;
-        this.lastAimSnapId = null;
-      }
-
-      // Commit fire on release if the hook was idle when the press began.
-      if (snap.pointerJustReleased) {
-        if (this.player.hook.state === 'idle' && snap.pointerHoldMs < 4000) {
-          // Quick-tap or drag-and-release — fire toward the (snapped) world point.
-          const snapped = this.findAimSnap(worldPointer);
-          hookTarget = snapped
-            ? new Vec2(snapped.x, snapped.y)
-            : worldPointer;
-        } else if (this.player.hook.state === 'attached') {
-          // Tap while attached releases the rope.
-          releaseHookFlag = true;
-        }
-      }
-
-      // On touch, never auto-reel just because a finger is touching — the
-      // dedicated reel buttons are the only way to reel in/out. Otherwise
-      // the player would have to keep their finger on the screen (covering
-      // their view) to climb a swing.
-      playerPointerDown = false;
-    } else {
-      // Desktop: classic hold-to-grapple. Click commits instantly.
-      if (snap.pointerJustDown) {
-        const snapped = this.findAimSnap(worldPointer);
-        hookTarget = snapped ? new Vec2(snapped.x, snapped.y) : worldPointer;
-      }
-      releaseHookFlag = snap.pointerJustReleased;
-      if (snap.pointerDown) aimPointForDash = worldPointer;
-      this.aimActive = false;
-      this.aimSnapTarget = null;
+    // Release the hook on pointer-down (most responsive for timing the release).
+    if (snap.pointerJustDown && this.player.hook.state === 'attached') {
+      releaseHookFlag = true;
     }
 
     const playerInput: PlayerInputState = {
       moveX: snap.moveX,
       reel: snap.reel,
-      pointerDown: playerPointerDown,
+      pointerDown: false,
       dashRequested,
-      hookTarget,
+      hookTarget: null,
       releaseHook: releaseHookFlag,
-      aimPoint: aimPointForDash,
-      // On touch devices, slowly reel in automatically once the hook is
-      // attached so the player is steadily pulled upward without pressing
-      // the reel button. Manual reel input still takes priority in Player.update().
-      autoReel: snap.isTouch,
+      aimPoint: snap.pointerDown ? worldPointer : null,
+      autoReel: false,
     };
     if (dashRequested && this.player.dashCharges > 0) this.dashCount += 1;
 
     this.player.update(dt, playerInput, this.world, this.killY);
+
+    // Tutorial safety net — if the player falls more than ~600px below
+    // their spawn (e.g., they clicked downward or missed their first hook
+    // shot entirely), soft-respawn at origin so the screen doesn't go
+    // blank with them falling forever. No GameOver, no penalty — just a
+    // friendly toast pointing them at the platforms.
+    if (this.inTutorialFlow && this.player.pos.y > 600) {
+      this.player.pos.set(0, -120);
+      this.player.prev.copy(this.player.pos);
+      this.player.vel.set(0, 0);
+      this.player.invuln = 90;
+      this.player.hook.reset();
+      this.camera.reset(this.player.pos);
+      this.toast.show('Fly upward — approach a glowing platform to latch on and spin!');
+    }
+
+    // Swing detection — used by the tutorial swing step. The player is
+    // "swinging" when, while attached, they've applied moveX in BOTH
+    // directions. Bit 0 = went left, bit 1 = went right; both set fires
+    // the swing event. State clears on hook detach so each new swing has
+    // to demonstrate both directions afresh.
+    if (this.tutorial && !this.tutorial.isComplete()) {
+      if (this.player.hook.state === 'attached') {
+        if (playerInput.moveX < -0.3) this.swingBits |= 1;
+        else if (playerInput.moveX > 0.3) this.swingBits |= 2;
+        if (this.swingBits === 3) {
+          this.tutorial.notify('swing');
+          this.swingBits = 0;
+        }
+      } else if (this.swingBits !== 0) {
+        this.swingBits = 0;
+      }
+    }
 
     // Rope reel SFX — only play while the rope length is *actually* changing.
     // Holding the mouse with the rope clamped at minimum length should be
@@ -832,8 +915,10 @@ export class Game {
     // Tutorial altitude notify (final step gates on this).
     this.tutorial?.notify('altitude', { altitude: this.player.maxAltitude });
 
-    // Ambient looped sounds — lava warning and wind altitude.
-    if (this.usesLava()) {
+    // Ambient looped sounds — lava warning and wind altitude. Lava cues
+    // are suppressed during the tutorial flow (no lava is present, and a
+    // crescendo would teach the player to fear something that isn't there).
+    if (this.usesLava() && !this.inTutorialFlow) {
       const distToLava = this.killY - this.player.pos.y;
       const lavaIntensity = Math.max(0, Math.min(1, 1 - distToLava / 600));
       this.sfx.lavaWarning(lavaIntensity);
@@ -968,7 +1053,7 @@ export class Game {
     if (this.world && this.player) {
       this.renderer.pushCamera(this.camera);
       // Lava
-      if (this.usesLava()) {
+      if (this.usesLava() && !this.inTutorialFlow) {
         this.drawLava(theme.lava);
       }
       // Personal best altitude line
@@ -1018,17 +1103,20 @@ export class Game {
       this.drawBossDebris();
       // Particles
       this.particles.draw(this.renderer.ctx, this.lowQuality);
-      // Aim assist reticle — shows where the next grapple will fire while the
-      // player is dragging on mobile. Drawn over particles so it stays legible
-      // against busy backgrounds.
-      if (this.aimActive) {
-        this.drawAimAssist();
+      // Orbit indicator — shows the orbit ring the player will spin on when
+      // they approach the nearest grapple point. Drawn over particles.
+      if (this.player.hook.state === 'idle') {
+        this.drawOrbitIndicator();
+      }
+      // Draw the player's current orbit arc when attached.
+      if (this.player.hook.state === 'attached' && !this.lowQuality) {
+        this.hookRenderer.drawOrbitArc(this.renderer.ctx, this.player.hook, this.framesSinceStart);
       }
       // Floating texts
       this.screen.drawWorld(this.renderer.ctx);
       this.renderer.popCamera();
       // Lava-proximity vignette on top of the world.
-      if (this.usesLava()) this.drawLavaVignette();
+      if (this.usesLava() && !this.inTutorialFlow) this.drawLavaVignette();
       // Shield indicator near player
       if (this.player.shield > 0) this.drawShieldHalo();
       // Magnet halo — rotating orbit ring around the player while active.
@@ -1189,87 +1277,69 @@ export class Game {
   }
 
   /**
-   * Draws the aim reticle + assist line while the player is dragging to aim
-   * (touch-only path). Visible feedback is the whole point of the mobile
-   * overhaul — players should never have to commit to a shot blindly.
+   * Draws a dashed orbit preview ring around the nearest grappleable obstacle.
+   * Pulses brighter when the player is within auto-attach range so they know
+   * a latch is imminent.
    */
-  private drawAimAssist(): void {
-    if (!this.player) return;
+  private drawOrbitIndicator(): void {
+    if (!this.player || !this.world) return;
     const ctx = this.renderer.ctx;
     const px = this.player.pos.x;
     const py = this.player.pos.y;
-    const ax = this.aimWorldX;
-    const ay = this.aimWorldY;
-    const snapped = this.aimSnapTarget !== null;
-    const theme = this.themes.current;
-    const color = snapped ? theme.accent : '#ffffff';
+    const cooldownId = this.player.hook.lastAttachedId;
+    const hasCooldown = this.player.hook.reattachCooldown > 0;
+
+    let bestDist = PHYSICS.orbitAttachRange * 1.6;
+    let bestCx = 0;
+    let bestCy = 0;
+    let found = false;
+    for (const obs of this.world.obstacles) {
+      if (!obs.grappleable) continue;
+      if (obs.id === cooldownId && hasCooldown) continue;
+      const cx = obs.x + obs.width / 2;
+      const cy = obs.y + obs.height / 2;
+      const dist = Math.hypot(cx - px, cy - py);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestCx = cx;
+        bestCy = cy;
+        found = true;
+      }
+    }
+    if (!found) return;
+
+    const attachable = bestDist <= PHYSICS.orbitAttachRange;
     const t = this.framesSinceStart * 0.12;
-    const pulse = 0.6 + Math.sin(t) * 0.4;
+    const pulse = 0.55 + Math.sin(t) * 0.45;
+    const orbitR = Math.max(PHYSICS.ropeMinLength, Math.min(PHYSICS.ropeMaxLength, bestDist));
 
     ctx.save();
-    // Dashed line from player toward the aim point — moving dash offset to
-    // sell "energy traveling along the line".
-    ctx.setLineDash([6, 8]);
-    ctx.lineDashOffset = -this.framesSinceStart * 0.6;
-    ctx.strokeStyle = snapped
-      ? `rgba(0,243,255,${0.7 + pulse * 0.2})`
-      : 'rgba(255,255,255,0.42)';
-    ctx.lineWidth = snapped ? 2.2 : 1.4;
+    ctx.globalCompositeOperation = 'lighter';
+
+    // Orbit arc: brighter/cyan when attachable, faint white when approaching.
+    const arcAlpha = attachable ? 0.5 * pulse : 0.15 * pulse;
+    ctx.strokeStyle = attachable
+      ? `rgba(0,243,255,${arcAlpha})`
+      : `rgba(255,255,255,${arcAlpha})`;
+    ctx.lineWidth = attachable ? 1.6 : 0.9;
+    ctx.setLineDash([8, 10]);
+    ctx.lineDashOffset = -this.framesSinceStart * 0.5;
     ctx.beginPath();
-    ctx.moveTo(px, py);
-    // Clip the line short of the reticle so it doesn't visually clash with
-    // the ring.
-    const dx = ax - px;
-    const dy = ay - py;
-    const dist = Math.hypot(dx, dy);
-    if (dist > 0) {
-      const stopT = Math.max(0, (dist - 22) / dist);
-      ctx.lineTo(px + dx * stopT, py + dy * stopT);
-    }
+    ctx.arc(bestCx, bestCy, orbitR, 0, Math.PI * 2);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // Reticle ring
-    ctx.lineWidth = snapped ? 2.4 : 1.6;
-    ctx.strokeStyle = color;
-    const r = snapped ? 18 + pulse * 4 : 14;
-    ctx.beginPath();
-    ctx.arc(ax, ay, r, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // Crosshair tick marks
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = snapped ? color : 'rgba(255,255,255,0.7)';
-    ctx.lineWidth = 2;
-    const tick = snapped ? 8 : 5;
-    ctx.beginPath();
-    ctx.moveTo(ax - r - tick, ay);
-    ctx.lineTo(ax - r + 2, ay);
-    ctx.moveTo(ax + r - 2, ay);
-    ctx.lineTo(ax + r + tick, ay);
-    ctx.moveTo(ax, ay - r - tick);
-    ctx.lineTo(ax, ay - r + 2);
-    ctx.moveTo(ax, ay + r - 2);
-    ctx.lineTo(ax, ay + r + tick);
-    ctx.stroke();
-
-    // Inner dot
-    ctx.fillStyle = snapped ? color : 'rgba(255,255,255,0.9)';
-    ctx.beginPath();
-    ctx.arc(ax, ay, snapped ? 3 : 2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Range warning: if the raw pointer is outside the max range, draw a
-    // faint "out of range" indicator so the player understands why nothing
-    // is happening when they tap a far-away tower.
-    if (dist > PHYSICS.hookMaxRange) {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = 'rgba(255,80,80,0.7)';
-      ctx.lineWidth = 1.6;
+    // Guide line from player to the nearest grapple point when close.
+    if (attachable) {
+      const lineAlpha = 0.35 * pulse;
+      ctx.strokeStyle = `rgba(0,243,255,${lineAlpha})`;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 8]);
       ctx.beginPath();
-      const cap = PHYSICS.hookMaxRange;
-      ctx.arc(px, py, cap, 0, Math.PI * 2);
+      ctx.moveTo(px, py);
+      ctx.lineTo(bestCx, bestCy);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     ctx.restore();
@@ -2225,6 +2295,7 @@ export class Game {
       scoring: this.scoring,
       bestAltitude: this.save.data.bestAltitude[this.mode] ?? 0,
       bestScore: this.save.data.bestScore[this.mode] ?? 0,
+      easyMode: this.save.data.settings.easyMode,
       ...(modeTimer !== undefined ? { modeTimer } : {}),
       ...(modeTimerLabel !== undefined ? { modeTimerLabel } : {}),
       ...(modeProgress !== undefined ? { modeProgress } : {}),
@@ -2249,8 +2320,10 @@ export class Game {
   openMainMenu(): void {
     this.cleanupRun();
     this.state = GameState.MainMenu;
+    bootLog('menu ready');
     this.mainMenu.open(this.save, this.daily, {
       onPlay: (mode) => {
+        bootLog(`match start requested (${mode})`);
         if (mode === GameMode.TimeAttack) {
           this.openTimeAttackSelect();
         } else {
@@ -2319,7 +2392,58 @@ export class Game {
       this.tutorial = null;
       this.save.data.settings.tutorialSeen = true;
       this.save.save();
+      // Tutorial complete → graduate into real gameplay. The lava starts
+      // moving, the world resumes normal difficulty. We celebrate the
+      // transition so the player feels the shift: "I've earned this".
+      if (this.inTutorialFlow) {
+        this.completeTutorialFlow();
+      }
     });
+  }
+
+  /**
+   * Smooth transition from "no-lava tutorial" to "real Endless gameplay".
+   * Called when the tutorial step sequence finishes. The lava re-engages
+   * at a generous distance from the player so the moment feels triumphant
+   * rather than punishing.
+   */
+  private completeTutorialFlow(): void {
+    if (!this.inTutorialFlow) return;
+    this.inTutorialFlow = false;
+    // Re-anchor the kill line to a generous distance below the player.
+    // Player is at altitude ~120m (y ≈ -1200). Putting killY at player.y + 1400
+    // gives them about 23 seconds of runway at the slow easy-start lava speed
+    // before any pressure starts to register — plenty to enjoy the win.
+    if (this.player) {
+      this.killY = this.player.pos.y + 1400;
+      this.world?.setKillY(this.killY);
+    }
+    // Big celebratory beat — toast, sound, camera flash, SCREEN text.
+    // Restates the goal explicitly so the player carries it forward into
+    // real gameplay: keep climbing, beat your best.
+    this.toast.show('Tutorial complete — now CLIMB HIGHER!');
+    this.sfx.personalBest();
+    this.camera.flash(0.35);
+    this.screen.pulseBloom(0.6);
+    if (this.player) {
+      this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#ffd400', {
+        size: 36,
+        life: 0.9,
+        thickness: 5,
+      });
+      this.particles.burst(this.player.pos.x, this.player.pos.y, 24, '#00ff8a', {
+        speed: 1.2,
+        life: 1.1,
+      });
+      this.screen.addFloatingText(
+        'CLIMB HIGHER!',
+        this.player.pos.x,
+        this.player.pos.y - 50,
+        '#ffd400',
+        { size: 32, life: 2, bold: true, vy: -1.2 },
+      );
+    }
+    this.crazy.happytime();
   }
 
   private startMode(mode: GameMode): void {
@@ -2360,6 +2484,12 @@ export class Game {
         break;
     }
 
+    // Easy-start applies only to a first-time Endless run. Time Attack
+    // uses static layouts (its own difficulty curve), and other modes are
+    // either skill-chase (Combo, Bot Race) or daily-shared (Daily seed
+    // must stay deterministic for the leaderboard).
+    const easyStart =
+      !this.save.data.settings.tutorialSeen && mode === GameMode.EndlessClimb;
     this.world = new World({
       seed,
       worldWidth: WORLD_WIDTH,
@@ -2368,8 +2498,10 @@ export class Game {
       spawnGapMax: 240,
       finishY: null,
       staticLayout,
+      easyStart,
     });
     this.player = new Player(0, -120);
+    this.player.useAutoAttach = true;
     this.player.setEvents({
       onHookFire: () => {
         this.sfx.hookFire();
@@ -2630,6 +2762,23 @@ export class Game {
     this.camera.reset(this.player.pos);
     this.killY = 600;
     this.lavaSpeed = mode === GameMode.ComboRun ? 1.8 : 0.94;
+    // Easy Mode: slower lava across the board (0.5 vs 0.94 in standard
+    // modes, 1.4 vs 1.8 in Combo Run). Combined with the delayed
+    // acceleration threshold in updatePlay, this gives casual players
+    // roughly twice as much breathing room at every altitude.
+    if (this.save.data.settings.easyMode) {
+      this.lavaSpeed = mode === GameMode.ComboRun ? 1.4 : 0.5;
+    }
+    // First-run Endless is the tutorial flow: lava is parked at an
+    // effectively-infinite distance so the player cannot die from a
+    // missed grapple or a sustained fall. The lava re-anchors close to
+    // the player when `completeTutorialFlow()` runs (after they finish
+    // the last tutorial step), so they immediately feel the stakes
+    // change when they "graduate" into the real game.
+    if (easyStart) {
+      this.killY = 1_000_000;
+      this.lavaSpeed = 0.66;
+    }
     this.framesSinceStart = 0;
     this.elapsedSeconds = 0;
     this.gameEnded = false;
@@ -2701,6 +2850,7 @@ export class Game {
     this.state = GameState.Playing;
     this.paused = false;
     this.crazy.gameplayStart();
+    bootLog(`match started (${mode})`);
     // Music should follow the active theme: Time Attack overrides with the
     // course theme, every other mode uses the equipped theme.
     if (this.save.data.settings.music) {
@@ -2715,7 +2865,74 @@ export class Game {
 
     if (mode === GameMode.BotRace) this.sfx.raceStartCountdown();
 
-    if (!this.save.data.settings.tutorialSeen && mode === GameMode.EndlessClimb) {
+    // Pre-roll grace + on-screen "GET READY". Without this the original
+    // boot dumped the player into live physics — gravity from frame 0,
+    // ~0.5s until lava contact if they did nothing. CrazyGames reviewers
+    // experienced exactly that scenario.
+    //
+    // Two dismissal modes:
+    //   - First-time players: the badge says "CLICK / TAP TO START" and
+    //     stays up indefinitely. The player dismisses it themselves. This
+    //     is the difference between "the hint disappeared before I could
+    //     read it" and "I read the hint and then started when I was ready".
+    //   - Returning players: short timed grace (~1.25s).
+    //
+    // BotRace already uses its own SFX-driven race-start countdown, so we
+    // skip the ready overlay for that mode to avoid a competing UI cue.
+    const isFirstRun = !this.save.data.settings.tutorialSeen;
+    const isTouch = this.input.isTouch;
+    const isTutorialEndless = isFirstRun && mode === GameMode.EndlessClimb;
+    // Tutorial flow: no lava, no death, persistent prompts. Lasts until
+    // the tutorial's altitude-graduation step completes (see startTutorial).
+    this.inTutorialFlow = isTutorialEndless;
+    this.swingBits = 0;
+    // Returning players still get a 75-frame grace; first-run uses
+    // wait-for-input but we also seed introFrames as a backstop in case
+    // the input listener somehow misses (still freezes physics + lava).
+    const graceFrames = isFirstRun ? 600 : 75; // ~10s safety vs ~1.25s
+    this.introFrames = isFirstRun ? graceFrames : graceFrames;
+    // Spawn invuln carries ~0.5s past the grace so the player doesn't
+    // insta-die on the first frame physics resume.
+    this.player.invuln = Math.max(this.player.invuln, graceFrames + 30);
+    if (mode !== GameMode.BotRace) {
+      let hint: string;
+      if (isTutorialEndless) {
+        hint = isTouch
+          ? 'Tutorial mode — no lava. Fly close to a glowing platform to latch on and spin!'
+          : 'Tutorial mode — no lava. Fly close to a glowing platform to latch on and spin!';
+      } else if (isTouch) {
+        hint = 'Fly near a glowing platform to latch on — TAP to release and fly up!';
+      } else {
+        hint = 'Fly near a glowing platform to latch on — CLICK to release and fly up!';
+      }
+      this.readyOverlay.show({
+        inputHint: hint,
+        durationMs: (graceFrames / 60) * 1000,
+        waitForInput: isFirstRun,
+        onComplete: () => {
+          // Snap the physics grace to zero in lockstep with the overlay
+          // disappearing. Without this, returning players could see the
+          // badge fade but feel an extra ~0.2s of frozen lag, and
+          // first-run players would have introFrames > 0 long after they
+          // dismissed the badge.
+          this.introFrames = 0;
+          // First-run only: spin up the tutorial flow once the player
+          // has confirmed they're ready. Guarded against state changes
+          // that might have happened during the wait (e.g., player hit
+          // the pause menu somehow, or returned to the main menu).
+          if (
+            isTutorialEndless &&
+            this.state === GameState.Playing &&
+            this.mode === GameMode.EndlessClimb &&
+            !this.save.data.settings.tutorialSeen &&
+            !this.tutorial
+          ) {
+            this.startTutorial();
+          }
+        },
+      });
+    } else if (isTutorialEndless) {
+      // BotRace + first-run is a weird combo, but cover it anyway.
       this.startTutorial();
     }
   }
@@ -3302,6 +3519,13 @@ export class Game {
     this.paused = true;
     this.state = GameState.Paused;
     this.crazy.gameplayStop();
+    // If we paused during the intro grace, end it now so the player
+    // isn't stuck on a frozen world after the on-screen badge has
+    // already timed out on its wall-clock setTimeout.
+    if (this.introFrames > 0) {
+      this.introFrames = 0;
+      this.readyOverlay.hide();
+    }
     this.pauseMenu.open({
       onResume: () => {
         this.paused = false;
@@ -3350,6 +3574,16 @@ export class Game {
     this.bossBannerEl?.remove();
     this.bossBannerEl = null;
     this.bossRewardFrames = 0;
+    // Dismiss any in-flight pre-roll overlay (e.g. player hit pause + exit
+    // during the grace window). Idempotent — no-op if nothing is showing.
+    this.readyOverlay.hide();
+    this.introFrames = 0;
+    this.inTutorialFlow = false;
+    this.swingBits = 0;
+    // Defensive: ensure the SDK's gameplay session is closed when we
+    // navigate back to a menu. The wrapper is idempotent against a
+    // double-stop, so this is safe even when endRun() already fired.
+    this.crazy.gameplayStop();
     // Restore the player's equipped theme — Time Attack temporarily overrides
     // it with a course-specific theme during the run.
     if (this.themes.current.id !== this.save.data.equippedTheme) {
@@ -3371,49 +3605,6 @@ export class Game {
       h = Math.imul(h, 0x01000193);
     }
     return (h ^ 0xc0ffee) >>> 0;
-  }
-
-  /**
-   * Aim assist: snap to the nearest grappleable obstacle within a generous
-   * radius of the player's touch / cursor. Returns the center of the obstacle
-   * (which also earns the perfect-anchor bonus) or null if nothing nearby.
-   *
-   * Snap radius is much larger on touch devices to forgive chubby thumbs.
-   * Snap is suppressed for obstacles strictly below the player because the
-   * hook physically can't fire downward (see GrapplingHook.shoot).
-   */
-  private findAimSnap(worldPointer: Vec2): { x: number; y: number; obstacle: import('./World').Obstacle } | null {
-    if (!this.world || !this.player) return null;
-    if (!this.save.data.settings.aimAssist) return null;
-    const isTouch = this.input.isTouch;
-    const snapRadius = isTouch ? 90 : 18; // world-space pixels
-    const px = this.player.pos.x;
-    const py = this.player.pos.y;
-    const maxRange = PHYSICS.hookMaxRange;
-    let best: { x: number; y: number; obstacle: import('./World').Obstacle; score: number } | null = null;
-    for (const obs of this.world.obstacles) {
-      if (!obs.grappleable) continue;
-      const cx = obs.x + obs.width / 2;
-      const cy = obs.y + obs.height / 2;
-      // Reject obstacles below the player — hook can't fire downward.
-      if (cy > py + 8) continue;
-      const distFromPlayer = Math.hypot(cx - px, cy - py);
-      if (distFromPlayer > maxRange) continue;
-      // Closest point on the obstacle rect to the raw aim point.
-      const clx = Math.max(obs.x, Math.min(worldPointer.x, obs.x + obs.width));
-      const cly = Math.max(obs.y, Math.min(worldPointer.y, obs.y + obs.height));
-      const distFromPointer = Math.hypot(clx - worldPointer.x, cly - worldPointer.y);
-      if (distFromPointer > snapRadius) continue;
-      // Score: prefer obstacles close to the touch; gentle bias toward
-      // those at a workable range from the player so a tap doesn't snap
-      // onto something already touching the glider.
-      const rangeBias = Math.max(0, 60 - distFromPlayer) * 0.5;
-      const score = distFromPointer + rangeBias;
-      if (!best || score < best.score) {
-        best = { x: cx, y: cy, obstacle: obs, score };
-      }
-    }
-    return best ? { x: best.x, y: best.y, obstacle: best.obstacle } : null;
   }
 
   private ensureTouchControls(): void {
