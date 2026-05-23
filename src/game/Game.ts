@@ -3,7 +3,7 @@ import { Bot, BOT_PERSONALITIES } from './Bot';
 import { World, type Obstacle } from './World';
 import { Camera } from './Camera';
 import { GameMode, GameState } from './GameState';
-import { PHYSICS, Vec2 } from './Physics';
+import { PHYSICS } from './Physics';
 
 import { ParticleSystem } from '../render/Particles';
 import { ScreenEffects } from '../render/ScreenEffects';
@@ -289,19 +289,6 @@ export class Game {
   private bossBannerEl: HTMLDivElement | null = null;
   /** Frames remaining for the current boss-wave reward window (slows the lava). */
   private bossRewardFrames = 0;
-
-  /**
-   * Mobile aim state — populated each frame while a touch is being held and
-   * the hook is idle. Drives the on-screen aim reticle + assist line, and is
-   * what gets committed when the player lifts their finger.
-   */
-  private aimActive = false;
-  private aimWorldX = 0;
-  private aimWorldY = 0;
-  /** Snapped aim target (set when aim assist found a grappleable obstacle). */
-  private aimSnapTarget: { x: number; y: number; obstacle: import('./World').Obstacle } | null = null;
-  /** Last obstacle id we snapped to — used to trigger a haptic on acquisition. */
-  private lastAimSnapId: number | null = null;
 
   /**
    * On-screen reel-in/reel-out buttons for mobile (shown only while hook is
@@ -3618,84 +3605,6 @@ export class Game {
       h = Math.imul(h, 0x01000193);
     }
     return (h ^ 0xc0ffee) >>> 0;
-  }
-
-  /**
-   * Aim assist: snap to the nearest grappleable obstacle within a generous
-   * radius of the player's touch / cursor. Returns the center of the obstacle
-   * (which also earns the perfect-anchor bonus) or null if nothing nearby.
-   *
-   * Snap radius is much larger on touch devices to forgive chubby thumbs.
-   * Snap is suppressed for obstacles strictly below the player because the
-   * hook physically can't fire downward (see GrapplingHook.shoot).
-   */
-  private findAimSnap(worldPointer: Vec2): { x: number; y: number; obstacle: import('./World').Obstacle } | null {
-    if (!this.world || !this.player) return null;
-    if (!this.save.data.settings.aimAssist && !this.save.data.settings.easyMode) return null;
-    const isTouch = this.input.isTouch;
-    // Easy Mode: enormous snap radius — clicking anywhere upward grapples
-    // the best available platform. This is the single biggest casual-mode
-    // win: it removes "I aimed slightly off, my hook missed, I died" as
-    // a failure mode entirely. The score function still prefers the
-    // platform closest to where the player clicked, so directional intent
-    // is preserved — only precision pressure is removed.
-    const easy = this.save.data.settings.easyMode;
-    const snapRadius = easy ? 1200 : isTouch ? 90 : 18; // world-space pixels
-    const px = this.player.pos.x;
-    const py = this.player.pos.y;
-    const maxRange = PHYSICS.hookMaxRange;
-    let best: { x: number; y: number; obstacle: import('./World').Obstacle; score: number } | null = null;
-    for (const obs of this.world.obstacles) {
-      if (!obs.grappleable) continue;
-      const cx = obs.x + obs.width / 2;
-      const cy = obs.y + obs.height / 2;
-      // Reject obstacles below the player — hook can't fire downward.
-      if (cy > py + 8) continue;
-      const distFromPlayer = Math.hypot(cx - px, cy - py);
-      if (distFromPlayer > maxRange) continue;
-      // Closest point on the obstacle rect to the raw aim point.
-      const clx = Math.max(obs.x, Math.min(worldPointer.x, obs.x + obs.width));
-      const cly = Math.max(obs.y, Math.min(worldPointer.y, obs.y + obs.height));
-      const distFromPointer = Math.hypot(clx - worldPointer.x, cly - worldPointer.y);
-      if (distFromPointer > snapRadius) continue;
-      // Score: prefer obstacles close to the touch; gentle bias toward
-      // those at a workable range from the player so a tap doesn't snap
-      // onto something already touching the glider. In easy mode we
-      // also prefer obstacles ABOVE the player so a downward click
-      // still grapples something useful.
-      const rangeBias = Math.max(0, 60 - distFromPlayer) * 0.5;
-      const upwardBias = easy ? Math.max(0, py - cy) * -0.04 : 0;
-      const score = distFromPointer + rangeBias + upwardBias;
-      if (!best || score < best.score) {
-        best = { x: cx, y: cy, obstacle: obs, score };
-      }
-    }
-    // Easy Mode fallback: even if the click was nowhere near any platform
-    // (or aimed straight down), grab the single best upward platform so
-    // every click becomes a successful grapple. Classic Mode preserves the
-    // "missed shot = no hook" failure mode for skill expression.
-    if (!best && easy) {
-      let fallback: { x: number; y: number; obstacle: import('./World').Obstacle; score: number } | null = null;
-      for (const obs of this.world.obstacles) {
-        if (!obs.grappleable) continue;
-        const cx = obs.x + obs.width / 2;
-        const cy = obs.y + obs.height / 2;
-        if (cy > py + 8) continue;
-        const distFromPlayer = Math.hypot(cx - px, cy - py);
-        if (distFromPlayer > maxRange) continue;
-        // Prefer platforms more directly above (vertical-ish) and at a
-        // reasonable range so the grapple has somewhere to go.
-        const verticality = Math.max(0, py - cy) / Math.max(40, distFromPlayer);
-        const score = -verticality * 200 + distFromPlayer * 0.1;
-        if (!fallback || score < fallback.score) {
-          fallback = { x: cx, y: cy, obstacle: obs, score };
-        }
-      }
-      if (fallback) {
-        return { x: fallback.x, y: fallback.y, obstacle: fallback.obstacle };
-      }
-    }
-    return best ? { x: best.x, y: best.y, obstacle: best.obstacle } : null;
   }
 
   private ensureTouchControls(): void {
