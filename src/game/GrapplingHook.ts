@@ -22,6 +22,10 @@ export class GrapplingHook {
   ropeLength = 0;
   attached: Obstacle | null = null;
   perfectAnchor = false;
+  /** ID of the last obstacle we detached from — skip for re-attach while cooldown > 0. */
+  lastAttachedId = -1;
+  /** Frames remaining before we can re-attach to the same obstacle. */
+  reattachCooldown = 0;
 
   reset(): void {
     this.state = 'idle';
@@ -30,6 +34,8 @@ export class GrapplingHook {
     this.ropeLength = 0;
     this.attached = null;
     this.perfectAnchor = false;
+    this.lastAttachedId = -1;
+    this.reattachCooldown = 0;
   }
 
   shoot(origin: Vec2, target: Vec2): HookShootResult {
@@ -108,9 +114,80 @@ export class GrapplingHook {
   }
 
   break(): void {
+    this.lastAttachedId = this.attached?.id ?? -1;
+    this.reattachCooldown = PHYSICS.orbitReattachCooldown;
     this.state = 'idle';
     this.attached = null;
     this.perfectAnchor = false;
+  }
+
+  /** Tick down the reattach cooldown — call once per update frame. */
+  updateCooldown(dt: number): void {
+    if (this.reattachCooldown > 0) this.reattachCooldown -= dt;
+  }
+
+  /**
+   * Spin-and-release: instantly attach to the nearest grappleable obstacle
+   * within `range` pixels. Returns the connect event on success, null otherwise.
+   */
+  tryAutoAttach(
+    playerPos: Vec2,
+    obstacles: ReadonlyArray<Obstacle>,
+    range: number,
+  ): HookConnectEvent | null {
+    if (this.state !== 'idle') return null;
+    let bestDist = range;
+    let bestObs: Obstacle | null = null;
+    let bestCx = 0;
+    let bestCy = 0;
+    for (const obs of obstacles) {
+      if (!obs.grappleable) continue;
+      if (obs.id === this.lastAttachedId && this.reattachCooldown > 0) continue;
+      const cx = obs.x + obs.width / 2;
+      const cy = obs.y + obs.height / 2;
+      const dist = Math.hypot(cx - playerPos.x, cy - playerPos.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestObs = obs;
+        bestCx = cx;
+        bestCy = cy;
+      }
+    }
+    if (!bestObs) return null;
+    this.position.set(bestCx, bestCy);
+    this.state = 'attached';
+    this.attached = bestObs;
+    this.ropeLength = Math.max(PHYSICS.ropeMinLength, Math.min(PHYSICS.ropeMaxLength, bestDist));
+    this.perfectAnchor = bestDist < 12;
+    return {
+      obstacle: bestObs,
+      position: this.position.clone(),
+      distance: bestDist,
+      perfectAnchor: this.perfectAnchor,
+    };
+  }
+
+  /**
+   * Rigid-rod orbital constraint: locks the player at exactly `ropeLength`
+   * from the anchor and zeroes the radial velocity so full circular orbits
+   * are possible. Applied every frame while attached in spin-and-release mode.
+   */
+  applyRigidConstraint(playerPos: Vec2, playerVel: Vec2, _dt: number): void {
+    if (this.state !== 'attached') return;
+    const toAnchorX = this.position.x - playerPos.x;
+    const toAnchorY = this.position.y - playerPos.y;
+    const dist = Math.hypot(toAnchorX, toAnchorY);
+    if (dist < 1e-3) return;
+    const nx = toAnchorX / dist;
+    const ny = toAnchorY / dist;
+    // Position correction: move player to exact orbit radius.
+    const error = dist - this.ropeLength;
+    playerPos.x += nx * error;
+    playerPos.y += ny * error;
+    // Velocity constraint: cancel the radial component entirely (rigid rod).
+    const radialVel = playerVel.x * nx + playerVel.y * ny;
+    playerVel.x -= nx * radialVel;
+    playerVel.y -= ny * radialVel;
   }
 
   /** Applies spring tension to a velocity in-place when attached. */
