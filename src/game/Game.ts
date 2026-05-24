@@ -254,12 +254,19 @@ export class Game {
   private dailyRankedThisAttempt = false;
   /** Active Time Attack course for the current/most-recent run. */
   private activeTimeAttackCourse: TimeAttackCourse = TIME_ATTACK_COURSES[0]!;
+  /** Cached game-over payload so share/revive failures can reopen the same screen. */
+  private lastGameOverCtx: GameOverContext | null = null;
   /** Sparks collected during the current run (mid-run rewards). */
   private runSparks = 0;
   /** Highest milestone celebrated this run (rounded down to nearest 250 then 500). */
   private nextMilestone = 100;
+  /** Next combo size that should trigger a bigger mid-run celebration. */
+  private nextComboCelebration = 5;
   /** Frames remaining of "slow lava" effect from the slow-pickup. */
   private slowLavaFrames = 0;
+  /** Limited miss recovery charges for the sling mechanic. */
+  private fallRescuesRemaining = 0;
+  private maxFallRescuesThisRun = 0;
   /**
    * Visual-only lava fireballs that arc up and back down. Pure decoration —
    * they don't damage the player, but they sell the danger of the lava.
@@ -656,27 +663,24 @@ export class Game {
 
     // Build input for player.
     //
-    // Spin-and-release mechanic: the hook auto-attaches when near a grapple
-    // point; a single tap / click releases it. No aiming required.
+    // Pendulum-swing mechanic: while flying, the player auto-snaps onto the
+    // nearest peg. While attached, a single tap (pointerJustDown) releases
+    // the player with their current swing velocity plus a guaranteed upward
+    // boost. `aimPoint` is still derived from the pointer for the dash.
     const worldPointer = this.camera.screenToWorld(snap.pointer.x, snap.pointer.y);
     const dashRequested =
       snap.dashJustPressed || (snap.twoFingerSwipeDown && this.player.dashCharges > 0);
 
-    let releaseHookFlag = false;
-    // Release the hook on pointer-down (most responsive for timing the release).
-    if (snap.pointerJustDown && this.player.hook.state === 'attached') {
-      releaseHookFlag = true;
-    }
-
     const playerInput: PlayerInputState = {
       moveX: snap.moveX,
       reel: snap.reel,
-      pointerDown: false,
+      pointerDown: snap.pointerDown,
       dashRequested,
       hookTarget: null,
-      releaseHook: releaseHookFlag,
+      releaseHook: false,
       aimPoint: snap.pointerDown ? worldPointer : null,
       autoReel: false,
+      tapJustPressed: snap.pointerJustDown,
     };
     if (dashRequested && this.player.dashCharges > 0) this.dashCount += 1;
 
@@ -939,13 +943,84 @@ export class Game {
       this.music.setIntensity(Math.min(1, (this.combo.combo - 1) / 9));
     }
 
+    // Sling-mode fall recovery: tutorial catches are free; real-run misses
+    // spend a limited pool of signal saves before the attempt ends.
+    if (
+      this.player.useSling &&
+      this.player.hook.state === 'idle' &&
+      !this.player.dead
+    ) {
+      const fallReference = this.player.hasAttached
+        ? this.player.lastAttachPos.y
+        : -120;
+      if (this.player.pos.y - fallReference > PHYSICS.slingFallCatchPx) {
+        this.handleSlingMissRecovery();
+      }
+    }
+
     if (this.player.dead && !this.gameEnded) {
       this.endRun(this.lastCause);
     }
   }
 
+  private handleSlingMissRecovery(): void {
+    if (!this.player) return;
+    if (this.inTutorialFlow) {
+      this.player.recoverToLastPeg();
+      this.player.vel.set(0, -7);
+      this.camera.reset(this.player.pos);
+      this.toast.show('Caught. Try the next peg.');
+      this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#a4f0ff', {
+        size: 22,
+        life: 0.6,
+        thickness: 3,
+      });
+      this.haptics.trigger('hookConnect');
+      return;
+    }
+
+    if (this.fallRescuesRemaining <= 0) {
+      this.player.die('Lost the signal');
+      return;
+    }
+
+    this.fallRescuesRemaining -= 1;
+    this.player.recoverToLastPeg();
+    this.player.vel.set(0, -9);
+    if (this.usesLava()) {
+      this.killY = Math.max(this.killY, this.player.pos.y + 560);
+      this.world?.setKillY(this.killY);
+    }
+    this.camera.reset(this.player.pos);
+    const left = this.fallRescuesRemaining;
+    this.toast.show(left > 0 ? `Signal save! ${left} left.` : 'Last signal save used.');
+    this.screen.addFloatingText(
+      left > 0 ? 'SIGNAL SAVE' : 'LAST SAVE',
+      this.player.pos.x,
+      this.player.pos.y - 36,
+      '#a4f0ff',
+      { size: 20, life: 1.25, bold: true },
+    );
+    this.particles.shockwave(this.player.pos.x, this.player.pos.y, '#a4f0ff', {
+      size: 30,
+      life: 0.75,
+      thickness: 4,
+    });
+    this.particles.burst(this.player.pos.x, this.player.pos.y, 18, '#a4f0ff', {
+      speed: 1,
+      life: 0.8,
+    });
+    this.sfx.shieldAbsorb();
+    this.camera.shake(left > 0 ? 6 : 10);
+    this.screen.pulseBloom(0.42);
+    this.haptics.trigger('hookConnect');
+  }
+
   private celebrateMilestone(altitude: number): void {
     if (!this.player) return;
+    const reward = altitude === 250 ? 8 : altitude >= 500 && altitude % 500 === 0
+      ? Math.min(50, Math.floor(altitude / 100))
+      : 0;
     // Big bold callout
     this.screen.addFloatingText(
       `${altitude}M`,
@@ -983,8 +1058,7 @@ export class Game {
     this.screen.pulseBloom(0.4);
     this.haptics.trigger('comboMilestone');
     // Mid-run Sparks reward at major milestones.
-    if (altitude >= 500 && altitude % 500 === 0) {
-      const reward = Math.min(50, Math.floor(altitude / 100));
+    if (reward > 0) {
       this.runSparks += reward;
       this.screen.addFloatingText(
         `+${reward} SPARKS`,
@@ -993,22 +1067,76 @@ export class Game {
         '#ffd400',
         { size: 16, life: 1.4, bold: true },
       );
-      // Even bigger flourish for major milestones
       this.particles.shockwave(this.player.pos.x, this.player.pos.y - 30, '#ff9d2e', {
-        size: 44,
+        size: altitude >= 500 ? 44 : 34,
         life: 1,
         thickness: 4,
       });
-      this.camera.shake(6);
+      this.camera.shake(altitude >= 500 ? 6 : 4);
     }
+    if (altitude === 250 || altitude % 1000 === 0) this.crazy.happytime();
+  }
+
+  private celebrateComboStreak(combo: number): void {
+    if (!this.player) return;
+    const reward = combo >= 8 ? 12 : 8;
+    this.runSparks += reward;
+    this.screen.addFloatingText(
+      combo >= 8 ? `SKYLINE x${combo}` : `HOT STREAK x${combo}`,
+      this.player.pos.x,
+      this.player.pos.y - 64,
+      combo >= 8 ? '#ff2bff' : '#ff9d2e',
+      { size: combo >= 8 ? 28 : 24, life: 1.6, bold: true, vy: -1.2 },
+    );
+    this.screen.addFloatingText(
+      `+${reward} SPARKS`,
+      this.player.pos.x,
+      this.player.pos.y - 34,
+      '#ffd400',
+      { size: 15, life: 1.1, bold: true },
+    );
+    this.particles.shockwave(this.player.pos.x, this.player.pos.y, combo >= 8 ? '#ff2bff' : '#ff9d2e', {
+      size: combo >= 8 ? 34 : 28,
+      life: 0.75,
+      thickness: 4,
+    });
+    this.particles.burst(this.player.pos.x, this.player.pos.y, combo >= 8 ? 18 : 14, '#ffd400', {
+      speed: 1,
+      life: 1,
+    });
+    this.camera.flash(combo >= 8 ? 0.28 : 0.2);
+    this.camera.shake(combo >= 8 ? 7 : 4);
+    this.screen.pulseBloom(combo >= 8 ? 0.45 : 0.35);
+    this.haptics.trigger('comboMilestone');
+    this.crazy.happytime();
+  }
+
+  private modeUsesRisingHazard(mode: GameMode = this.mode): boolean {
+    return (
+      mode === GameMode.EndlessClimb ||
+      mode === GameMode.DailyChallenge ||
+      mode === GameMode.ComboRun
+    );
   }
 
   private usesLava(): boolean {
     return (
-      this.mode === GameMode.EndlessClimb ||
-      this.mode === GameMode.DailyChallenge ||
-      this.mode === GameMode.ComboRun
+      this.modeUsesRisingHazard() &&
+      this.player !== null
     );
+  }
+
+  private initialLavaGap(mode: GameMode = this.mode): number {
+    if (!this.modeUsesRisingHazard(mode)) return 1_000_000;
+    if (mode === GameMode.ComboRun) return this.save.data.settings.easyMode ? 1180 : 980;
+    return this.save.data.settings.easyMode ? 1500 : 1220;
+  }
+
+  private fallRescueLimit(mode: GameMode = this.mode): number {
+    const easy = this.save.data.settings.easyMode;
+    if (mode === GameMode.ComboRun) return easy ? 2 : 1;
+    if (mode === GameMode.BotRace || mode === GameMode.TimeAttack) return easy ? 2 : 1;
+    return easy ? 3 : 2;
   }
 
   private notifyUnlock = (e: { def: { id: string; name: string; reward: number } }): void => {
@@ -1088,7 +1216,7 @@ export class Game {
       // Player
       const skin = getSkin(this.save.data.equippedSkin);
       this.drawPlayer(this.player, skin.primary, skin.glow, false);
-      // Hook
+      // Hook — in sling/pendulum mode this draws the two-rope V (Talking Tom style).
       const hookDef = getHook(this.save.data.equippedHook);
       this.hookRenderer.draw(
         this.renderer.ctx,
@@ -1098,18 +1226,22 @@ export class Game {
         hookDef,
         this.framesSinceStart,
         this.lowQuality,
+        this.player.useSling,
       );
       // Boss debris (rendered before particles so embers overlay it).
       this.drawBossDebris();
       // Particles
       this.particles.draw(this.renderer.ctx, this.lowQuality);
-      // Orbit indicator — shows the orbit ring the player will spin on when
-      // they approach the nearest grapple point. Drawn over particles.
+      // Snap indicator — shows the nearest peg the player will latch onto.
       if (this.player.hook.state === 'idle') {
         this.drawOrbitIndicator();
       }
-      // Draw the player's current orbit arc when attached.
-      if (this.player.hook.state === 'attached' && !this.lowQuality) {
+      // Orbit arc preview only in the legacy (non-sling) projectile mode.
+      if (
+        !this.player.useSling &&
+        this.player.hook.state === 'attached' &&
+        !this.lowQuality
+      ) {
         this.hookRenderer.drawOrbitArc(this.renderer.ctx, this.player.hook, this.framesSinceStart);
       }
       // Floating texts
@@ -1277,9 +1409,9 @@ export class Game {
   }
 
   /**
-   * Draws a dashed orbit preview ring around the nearest grappleable obstacle.
-   * Pulses brighter when the player is within auto-attach range so they know
-   * a latch is imminent.
+   * Highlights the peg the player will snap onto next. In sling mode this is
+   * a tight pulsing ring on the nearest in-range peg (the snap is binary,
+   * so an orbital preview doesn't make sense any more).
    */
   private drawOrbitIndicator(): void {
     if (!this.player || !this.world) return;
@@ -1289,6 +1421,49 @@ export class Game {
     const cooldownId = this.player.hook.lastAttachedId;
     const hasCooldown = this.player.hook.reattachCooldown > 0;
 
+    if (this.player.useSling) {
+      // Sling snap indicator — nearest peg within ~3× snap range gets a soft
+      // outer ring; flips to a bright ring + crosshair once in snap range.
+      const snapRange = this.player.slingAttachRange;
+      const previewRange = snapRange * 3;
+      let bestDist = previewRange;
+      let bestCx = 0;
+      let bestCy = 0;
+      let bestObs = null as null | { color: string };
+      for (const obs of this.world.obstacles) {
+        if (!obs.grappleable) continue;
+        if (obs.bouncy) continue;
+        if (obs.id === cooldownId && hasCooldown) continue;
+        const cpx = Math.max(obs.x, Math.min(px, obs.x + obs.width));
+        const cpy = Math.max(obs.y, Math.min(py, obs.y + obs.height));
+        const dist = Math.hypot(cpx - px, cpy - py);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestCx = obs.x + obs.width / 2;
+          bestCy = obs.y + obs.height / 2;
+          bestObs = obs;
+        }
+      }
+      if (!bestObs) return;
+      const inRange = bestDist <= snapRange;
+      const pulse = 0.55 + Math.sin(this.framesSinceStart * 0.18) * 0.45;
+      const alpha = (inRange ? 0.6 : 0.2) * pulse;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = withAlphaColor(inRange ? '#00f3ff' : '#ffffff', alpha);
+      ctx.lineWidth = inRange ? 2 : 1;
+      ctx.setLineDash([6, 6]);
+      ctx.lineDashOffset = -this.framesSinceStart * 0.4;
+      const r = inRange ? 22 : 28 + Math.sin(this.framesSinceStart * 0.1) * 4;
+      ctx.beginPath();
+      ctx.arc(bestCx, bestCy, r, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      return;
+    }
+
+    // Legacy orbital preview (bots/dev fallback).
     let bestDist = PHYSICS.orbitAttachRange * 1.6;
     let bestCx = 0;
     let bestCy = 0;
@@ -1447,7 +1622,10 @@ export class Game {
       const cy = o.y + o.height / 2;
       if (!this.isVisible(cx, cy, Math.max(o.width, o.height))) continue;
       const pulse = 0.6 + Math.sin(o.pulse) * 0.4;
-      const alpha = o.unstableTriggered ? Math.max(0, 1 - o.unstableTimer / 24) : 1;
+      let alpha = o.unstableTriggered ? Math.max(0, 1 - o.unstableTimer / 24) : 1;
+      // Timed pegs dim out when they're inactive (not snappable). World.update
+      // flips obs.grappleable on the cycle; we use that as the visual cue.
+      if (o.kind === 'timed' && !o.grappleable) alpha *= 0.32;
       ctx.globalAlpha = alpha;
 
       if (o.kind === 'energy') {
@@ -1673,10 +1851,12 @@ export class Game {
         ctx.beginPath();
         ctx.arc(cx, drawY, r - 4, 0, Math.PI * 2);
         ctx.stroke();
-      } else {
-        // Platform / bouncy / unstable — varied visual styles selected by
-        // `o.variant` (0=classic, 1=circuit, 2=hover-pad).
+      } else if (o.kind === 'bouncy') {
+        // Bouncy kicker — stays a rectangular slab (it's a surface, not a peg).
         this.drawPlatformLike(o, pulse, time);
+      } else {
+        // Platform / unstable / timed — small circular pegs.
+        this.drawPeg(o, pulse, time);
       }
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
@@ -1689,6 +1869,95 @@ export class Game {
    * of repeated rectangles. Edge accent uses the theme accent so the platform
    * pops against the (typically) violet body without matching the player skin.
    */
+  /**
+   * Slingshot peg renderer. Small glowing circle target. Used for
+   * platform / unstable / timed obstacles which all behave as snap pegs.
+   * Unstable pegs flash orange when triggered; timed pegs already have
+   * their inactive alpha applied by the caller.
+   */
+  private drawPeg(o: Obstacle, pulse: number, time: number): void {
+    const ctx = this.renderer.ctx;
+    const accent = this.themes.current.accent;
+    const cx = o.x + o.width / 2;
+    const cy = o.y + o.height / 2;
+    const r = Math.max(o.width, o.height) / 2;
+    const isUnstable = o.kind === 'unstable';
+    const isTimed = o.kind === 'timed';
+    const baseColor = isUnstable
+      ? '#ff9d2e'
+      : isTimed
+      ? '#ffa726'
+      : accent;
+    const ringColor = isUnstable || isTimed ? baseColor : '#ffffff';
+
+    // Outer halo glow.
+    if (!this.lowQuality) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 3);
+      halo.addColorStop(0, withAlphaColor(baseColor, 0.55 * pulse));
+      halo.addColorStop(0.45, withAlphaColor(baseColor, 0.18 * pulse));
+      halo.addColorStop(1, withAlphaColor(baseColor, 0));
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r * 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Peg body — bright core fading to the accent at the rim.
+    const core = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    core.addColorStop(0, '#ffffff');
+    core.addColorStop(0.55, baseColor);
+    core.addColorStop(1, mixColor(baseColor, '#000000', 0.45));
+    ctx.fillStyle = core;
+    if (!this.lowQuality) {
+      ctx.shadowColor = baseColor;
+      ctx.shadowBlur = 16 * pulse;
+    }
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    // Inner ring detail (lighter, fixed alpha).
+    ctx.strokeStyle = withAlphaColor(ringColor, 0.65);
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 3.5, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Timed-peg countdown ring — sweep that fills as the active window
+    // elapses, gives the player a visual on when it'll go inactive.
+    if (isTimed && o.grappleable && !this.lowQuality) {
+      const phaseOffset = (o.seedPhase / (Math.PI * 2)) * 120;
+      const cyclePos = ((time + phaseOffset) % 120 + 120) % 120;
+      const activeWin = 120 * 0.55;
+      const fillT = Math.min(1, cyclePos / activeWin);
+      ctx.strokeStyle = withAlphaColor('#ffffff', 0.85);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(
+        cx,
+        cy,
+        r + 3,
+        -Math.PI / 2,
+        -Math.PI / 2 + (1 - fillT) * Math.PI * 2,
+      );
+      ctx.stroke();
+    }
+
+    // Unstable-peg crumble tick — small dashes shaking around it.
+    if (isUnstable && o.unstableTriggered && !this.lowQuality) {
+      ctx.strokeStyle = withAlphaColor('#ff9d2e', 0.9);
+      ctx.lineWidth = 1;
+      const shake = Math.sin(time * 0.8) * 1.5;
+      ctx.beginPath();
+      ctx.arc(cx + shake, cy + shake, r + 5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
+
   private drawPlatformLike(o: Obstacle, pulse: number, time: number): void {
     const ctx = this.renderer.ctx;
     const isBouncy = o.kind === 'bouncy';
@@ -2296,6 +2565,7 @@ export class Game {
       bestAltitude: this.save.data.bestAltitude[this.mode] ?? 0,
       bestScore: this.save.data.bestScore[this.mode] ?? 0,
       easyMode: this.save.data.settings.easyMode,
+      ...(!this.inTutorialFlow && this.player.useSling ? { fallRescues: this.fallRescuesRemaining } : {}),
       ...(modeTimer !== undefined ? { modeTimer } : {}),
       ...(modeTimerLabel !== undefined ? { modeTimerLabel } : {}),
       ...(modeProgress !== undefined ? { modeProgress } : {}),
@@ -2415,9 +2685,11 @@ export class Game {
     // gives them about 23 seconds of runway at the slow easy-start lava speed
     // before any pressure starts to register — plenty to enjoy the win.
     if (this.player) {
-      this.killY = this.player.pos.y + 1400;
+      this.killY = this.player.pos.y + this.initialLavaGap(GameMode.EndlessClimb);
       this.world?.setKillY(this.killY);
     }
+    this.maxFallRescuesThisRun = this.fallRescueLimit(GameMode.EndlessClimb);
+    this.fallRescuesRemaining = this.maxFallRescuesThisRun;
     // Big celebratory beat — toast, sound, camera flash, SCREEN text.
     // Restates the goal explicitly so the player carries it forward into
     // real gameplay: keep climbing, beat your best.
@@ -2501,7 +2773,17 @@ export class Game {
       easyStart,
     });
     this.player = new Player(0, -120);
-    this.player.useAutoAttach = true;
+    this.player.useSling = true;
+    this.player.easyModeAssist = this.save.data.settings.easyMode;
+    this.player.slingAttachRange = this.save.data.settings.easyMode
+      ? PHYSICS.slingAttachRange + 18
+      : PHYSICS.slingAttachRange;
+    this.player.tapReleaseBoost = this.save.data.settings.easyMode
+      ? PHYSICS.tapReleaseBoost + 2
+      : PHYSICS.tapReleaseBoost;
+    this.player.tapReleaseMinUpwardVel = this.save.data.settings.easyMode
+      ? PHYSICS.tapReleaseMinUpwardVel + 2
+      : PHYSICS.tapReleaseMinUpwardVel;
     this.player.setEvents({
       onHookFire: () => {
         this.sfx.hookFire();
@@ -2542,6 +2824,35 @@ export class Game {
         if (vel.len() > 16 && this.player) {
           this.particles.burst(this.player.pos.x, this.player.pos.y, 6, '#ffffff', { speed: 0.4, life: 0.4 });
         }
+        const launchBurst = this.player?.lastReleaseBurst ?? 0;
+        const perfectLaunch = this.player?.lastReleasePerfect ?? false;
+        if (this.player && launchBurst > 0.2) {
+          const color = perfectLaunch ? '#ffd400' : '#ff9d2e';
+          this.screen.addFloatingText(
+            perfectLaunch ? 'PERFECT RELEASE' : 'HOT LAUNCH',
+            this.player.pos.x,
+            this.player.pos.y - 34,
+            color,
+            { size: perfectLaunch ? 20 : 17, life: 1, bold: true },
+          );
+          this.particles.shockwave(this.player.pos.x, this.player.pos.y, color, {
+            size: 20 + launchBurst * 14,
+            life: 0.55,
+            thickness: 3,
+          });
+          this.particles.burst(this.player.pos.x, this.player.pos.y, perfectLaunch ? 14 : 9, color, {
+            speed: 0.7 + launchBurst * 0.45,
+            life: 0.7,
+          });
+          this.camera.flash(0.12 + launchBurst * 0.12);
+          this.camera.punchZoom(0.03 + launchBurst * 0.03, 10 + launchBurst * 6);
+          this.screen.pulseBloom(0.22 + launchBurst * 0.2);
+          this.scoring.addBonus(perfectLaunch ? 45 : 20);
+          if (perfectLaunch) {
+            this.haptics.trigger('comboMilestone');
+            this.crazy.happytime();
+          }
+        }
         if (this.combo.combo > 1 && this.combo.combo % 3 === 0) {
           this.sfx.combo(this.combo.combo);
           this.camera.flash(0.22);
@@ -2563,6 +2874,10 @@ export class Game {
               { size: 22, bold: true },
             );
           }
+        }
+        if (this.combo.combo >= this.nextComboCelebration) {
+          this.celebrateComboStreak(this.combo.combo);
+          this.nextComboCelebration += this.combo.combo >= 8 ? 3 : 2;
         }
       },
       onDash: () => {
@@ -2760,7 +3075,11 @@ export class Game {
     this.screen.clear();
     this.trailRenderer.reset();
     this.camera.reset(this.player.pos);
-    this.killY = 600;
+    // Endless/Daily/Combo start with a forgiving lava gap; non-hazard modes
+    // park the kill line far below the course.
+    this.killY = this.modeUsesRisingHazard(mode)
+      ? this.player.pos.y + this.initialLavaGap(mode)
+      : 1_000_000;
     this.lavaSpeed = mode === GameMode.ComboRun ? 1.8 : 0.94;
     // Easy Mode: slower lava across the board (0.5 vs 0.94 in standard
     // modes, 1.4 vs 1.8 in Combo Run). Combined with the delayed
@@ -2779,6 +3098,7 @@ export class Game {
       this.killY = 1_000_000;
       this.lavaSpeed = 0.66;
     }
+    this.world.setKillY(this.killY);
     this.framesSinceStart = 0;
     this.elapsedSeconds = 0;
     this.gameEnded = false;
@@ -2790,7 +3110,10 @@ export class Game {
     this.hookAttachedFrames = 0;
     this.runSparks = 0;
     this.nextMilestone = 100;
+    this.nextComboCelebration = 5;
     this.slowLavaFrames = 0;
+    this.maxFallRescuesThisRun = this.fallRescueLimit(mode);
+    this.fallRescuesRemaining = this.maxFallRescuesThisRun;
     this.fireballs.length = 0;
     this.fireballCooldown = 240;
     this.crumbledIds.clear();
@@ -2801,7 +3124,9 @@ export class Game {
     this.bossBannerEl = null;
     this.bossRewardFrames = 0;
     // Boss waves only fire in Endless climb. First wave hits at 1000m.
-    this.bossWaveEnabled = mode === GameMode.EndlessClimb;
+    // Disabled in sling mode — lethal falling debris doesn't mix with the
+    // forgiving fall-recover-on-miss loop.
+    this.bossWaveEnabled = mode === GameMode.EndlessClimb && !this.player.useSling;
     this.nextBossWaveAltitude = this.bossWaveEnabled ? 1000 : 0;
     this.ghostRecording = [];
     this.ghostPlayback =
@@ -3186,20 +3511,95 @@ export class Game {
       ...(trickSummary.tricks.length > 0 ? { trickSummary } : {}),
       ...(nextUnlock ? { nextUnlock } : {}),
     };
-    void this.maybeShowAd();
-    this.openGameOver(ctx);
+    const ctxCopy = this.decorateGameOverContext(ctx);
+    this.lastGameOverCtx = ctxCopy;
+    this.openGameOver(ctxCopy);
   }
 
   /** Open the game-over screen and bind all retry/menu/share/clip callbacks. */
   private openGameOver(ctx: GameOverContext): void {
     this.gameOver.open(ctx, {
       onRetry: () => this.startMode(this.mode),
-      onMenu: () => this.openMainMenu(),
+      onMenu: () => void this.returnToMenuFromGameOver(),
       onRevive: () => this.requestRevive(),
       onWatch2xAd: () => void this.watchDoubleAd(),
       onShare: () => this.openShare(ctx),
       onSaveClip: () => void this.saveClip(),
     });
+  }
+
+  private canReviveCurrentRun(): boolean {
+    return (
+      !this.hasUsedRevive &&
+      !!this.player?.dead &&
+      (this.mode === GameMode.EndlessClimb || this.mode === GameMode.DailyChallenge)
+    );
+  }
+
+  private decorateGameOverContext(ctx: GameOverContext): GameOverContext {
+    const nextMilestoneGap = Math.max(0, this.nextMilestone - ctx.altitude);
+    const bestAltitude = this.save.data.bestAltitude[ctx.mode] ?? 0;
+    const bestGap = bestAltitude > ctx.altitude ? bestAltitude - ctx.altitude : 0;
+    const nextUnlockRemaining = ctx.nextUnlock ? Math.max(0, ctx.nextUnlock.cost - ctx.nextUnlock.current) : null;
+
+    let eyebrow = ctx.newBestAltitude || ctx.newBestScore || ctx.newBestTime ? 'New Best' : 'Run Ended';
+    let retryLabel = 'Retry';
+    let retrySub = this.mode === GameMode.TimeAttack ? 'Restart instantly' : 'Back in instantly';
+    let reviveLabel = 'Keep This Run';
+    let reviveSub = 'Watch ad to continue';
+    let nudge = ctx.nudge;
+
+    if (ctx.canRevive) {
+      eyebrow = 'Close Call';
+      retryLabel = 'Fresh Run';
+      retrySub = 'Restart from the ground';
+      reviveSub = 'Resume from the checkpoint';
+      if (nextMilestoneGap > 0 && nextMilestoneGap <= 120) {
+        reviveLabel = `Push to ${this.nextMilestone}m`;
+        nudge = `Only ${Math.ceil(nextMilestoneGap)}m short of ${this.nextMilestone}m.`;
+      } else if (bestGap > 0 && bestGap <= 150) {
+        reviveLabel = 'Beat Your Best';
+        nudge = `Just ${Math.ceil(bestGap)}m short of your best climb.`;
+      } else if (ctx.peakCombo >= 5) {
+        reviveLabel = 'Keep the Streak';
+        nudge = `That x${ctx.peakCombo} rhythm was working.`;
+      } else if (ctx.mode === GameMode.DailyChallenge) {
+        reviveLabel = 'Save This Daily';
+        nudge = 'One clean latch can rescue the daily run.';
+      } else {
+        nudge = 'You still have momentum. Convert this run.';
+      }
+    } else if (!nudge && nextUnlockRemaining !== null && nextUnlockRemaining <= 40) {
+      nudge = `${nextUnlockRemaining} Sparks left to unlock ${ctx.nextUnlock!.name}.`;
+    } else if (!nudge && ctx.mode === GameMode.TimeAttack) {
+      nudge = 'A cleaner line is faster than a riskier one.';
+    } else if (!nudge && ctx.mode === GameMode.BotRace && ctx.raceResult && ctx.raceResult.position > 1) {
+      nudge = `You finished ${ctx.raceResult.position} of ${ctx.raceResult.total}. One cleaner start flips that race.`;
+    }
+
+    return {
+      ...ctx,
+      eyebrow,
+      retryLabel,
+      retrySub,
+      reviveLabel,
+      reviveSub,
+      ...(nudge ? { nudge } : {}),
+      canWatch2xAd: !this.hasUsed2xSparks,
+    };
+  }
+
+  private shouldShowMenuInterstitial(): boolean {
+    if (!this.crazy.available || !this.player) return false;
+    if (this.canReviveCurrentRun()) return false;
+    if (this.save.data.totalRuns < 3) return false;
+    if (this.elapsedSeconds < 45 && this.player.maxAltitude < 350 && this.combo.peak < 5) return false;
+    return true;
+  }
+
+  private async returnToMenuFromGameOver(): Promise<void> {
+    await this.maybeShowAd();
+    this.openMainMenu();
   }
 
   /**
@@ -3361,7 +3761,7 @@ export class Game {
   }
 
   private async maybeShowAd(): Promise<void> {
-    if (!this.crazy.available) return;
+    if (!this.shouldShowMenuInterstitial()) return;
     await this.crazy.requestAd('midgame', 240);
   }
 
@@ -3370,7 +3770,7 @@ export class Game {
     const adResult = await this.crazy.requestAd('rewarded');
     if (!adResult.rewarded && this.crazy.available) {
       this.toast.show('Ad failed — try again.');
-      const fallbackCtx = this.buildLastGameOverCtx();
+      const fallbackCtx = this.lastGameOverCtx ?? this.buildLastGameOverCtx();
       this.openGameOver(fallbackCtx);
       return;
     }
@@ -3379,6 +3779,7 @@ export class Game {
     this.gameEnded = false;
     this.state = GameState.Playing;
     this.player.revive();
+    this.lastGameOverCtx = null;
     this.gameOver.close();
     this.hud = new HUD(this.uiRoot);
     this.ensureTouchControls();
@@ -3400,6 +3801,9 @@ export class Game {
         this.combo.perfectAnchors;
       this.save.data.sparks += lastRunSparks;
       this.save.save();
+      if (this.lastGameOverCtx) {
+        this.lastGameOverCtx = { ...this.lastGameOverCtx, canWatch2xAd: false };
+      }
       this.toast.show(`+${lastRunSparks} bonus Sparks!`);
     } else {
       // Ad failed / declined — let them retry.
@@ -3495,7 +3899,7 @@ export class Game {
   }
 
   private buildLastGameOverCtx(): GameOverContext {
-    return {
+    return this.decorateGameOverContext({
       mode: this.mode,
       cause: this.lastCause,
       score: this.scoring.total,
@@ -3508,10 +3912,13 @@ export class Game {
       newBestTime: false,
       elapsedSeconds: this.elapsedSeconds,
       rewards: { xp: 0, sparks: 0, bonusXp: 0, levelUps: [] },
-      canRevive: false,
+      canRevive: this.canReviveCurrentRun(),
       adsAvailable: this.crazy.available,
       dailyStreak: this.save.data.dailyStreak,
-    };
+      replayAvailable: this.recorder?.hasClip() ?? false,
+      ...(this.unlocks.nextCheapestUnlock() ? { nextUnlock: this.unlocks.nextCheapestUnlock()! } : {}),
+      ...(this.tricks.summary().tricks.length > 0 ? { trickSummary: this.tricks.summary() } : {}),
+    });
   }
 
   private pause(): void {

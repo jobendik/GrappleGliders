@@ -19,6 +19,8 @@ export interface HUDContext {
   raceStatus?: string;
   /** Show "EASY" badge near the score card while easy mode is active. */
   easyMode?: boolean;
+  /** Remaining sling miss recoveries. Hidden when undefined. */
+  fallRescues?: number;
 }
 
 const DASH_DOT_COUNT = PHYSICS.maxDashCharges;
@@ -33,6 +35,8 @@ export class HUD {
     scoreBest: HTMLDivElement;
     dashDots: HTMLDivElement;
     dashFill: HTMLElement;
+    savesRow: HTMLDivElement;
+    savesValue: HTMLElement;
     centerCard: HTMLDivElement;
     centerLabel: HTMLDivElement;
     centerValue: HTMLDivElement;
@@ -73,6 +77,10 @@ export class HUD {
           <div class="dash-dots" data-el="dashDots"></div>
         </div>
         <div class="bar" style="margin-top:4px"><i data-el="dashFill"></i></div>
+        <div class="row hud-saves-row" data-el="savesRow">
+          <span>Saves</span>
+          <strong data-el="savesValue">0</strong>
+        </div>
       </div>
     `;
     this.root.appendChild(container);
@@ -106,6 +114,8 @@ export class HUD {
       scoreBest: container.querySelector('[data-el="scoreBest"]')!,
       dashDots,
       dashFill: container.querySelector('[data-el="dashFill"]')!,
+      savesRow: container.querySelector('[data-el="savesRow"]')!,
+      savesValue: container.querySelector('[data-el="savesValue"]')!,
       centerCard: container.querySelector('.hud-card.center')!,
       centerLabel: container.querySelector('[data-el="centerLabel"]')!,
       centerValue: container.querySelector('[data-el="centerValue"]')!,
@@ -152,6 +162,15 @@ export class HUD {
         ? 100
         : (ctx.player.dashRecharge / PHYSICS.dashCooldownFrames) * 100;
     this.el.dashFill.style.width = `${Math.min(100, rechargePct)}%`;
+
+    if (typeof ctx.fallRescues === 'number') {
+      this.el.savesRow.classList.remove('hidden');
+      this.el.savesValue.textContent = String(ctx.fallRescues);
+      this.el.savesRow.classList.toggle('danger', ctx.fallRescues <= 0);
+    } else {
+      this.el.savesRow.classList.add('hidden');
+      this.el.savesRow.classList.remove('danger');
+    }
 
     // Combo: pulse the display on each integer step up.
     if (ctx.combo.combo > 1) {

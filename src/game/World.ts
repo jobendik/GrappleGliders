@@ -6,6 +6,7 @@ export type ObstacleKind =
   | 'platform'
   | 'energy'
   | 'unstable'
+  | 'timed'
   | 'bouncy'
   | 'spike'
   | 'drone'
@@ -49,6 +50,7 @@ export const OBSTACLE_COLORS: Record<ObstacleKind, string> = {
   platform: '#5b35e6',
   energy: '#a45cff',
   unstable: '#ff9d2e',
+  timed: '#ffa726',
   bouncy: '#00ff8a',
   spike: '#ff255e',
   drone: '#ff2bff',
@@ -56,6 +58,21 @@ export const OBSTACLE_COLORS: Record<ObstacleKind, string> = {
   'shield-pickup': '#00ff8a',
   'magnet-pickup': '#a45cff',
   'slow-pickup': '#a4f0ff',
+};
+
+/** Cycle length (frames at 60fps) for timed pegs — 2 seconds total. */
+export const TIMED_PEG_PERIOD = 120;
+/** Fraction of the cycle a timed peg is active (snappable). */
+export const TIMED_PEG_ACTIVE_FRAC = 0.55;
+
+/** True when a timed peg's cycle window is currently in its active phase. */
+export const isTimedPegActive = (
+  obs: Pick<Obstacle, 'seedPhase'>,
+  frames: number,
+): boolean => {
+  const phaseOffset = (obs.seedPhase / (Math.PI * 2)) * TIMED_PEG_PERIOD;
+  const cyclePos = ((frames + phaseOffset) % TIMED_PEG_PERIOD + TIMED_PEG_PERIOD) % TIMED_PEG_PERIOD;
+  return cyclePos < TIMED_PEG_PERIOD * TIMED_PEG_ACTIVE_FRAC;
 };
 
 export const isPickup = (kind: ObstacleKind): kind is PickupKind =>
@@ -128,6 +145,8 @@ export class World {
    * world transitions to normal difficulty.
    */
   private groupsSpawned = 0;
+  /** Internal frame counter — drives the timed-peg active/inactive cycle. */
+  private frames = 0;
 
   constructor(config: WorldConfig) {
     this.config = config;
@@ -151,41 +170,49 @@ export class World {
   }
 
   private seedInitial(): void {
-    // First few platforms are guaranteed safe.
-    //
-    // On easy-start (first run) the platforms are deliberately NARROW (130
-    // px wide), not wide — a wide platform blocks the swing arc and gives
-    // the rope less room to pass without colliding. Aim assist + Easy
-    // Mode's giant snap radius handle "is this platform easy to grab?";
-    // the platform body itself should stay slim so the swing feels open.
-    //
-    // Position alternates left/right of center so the player has to swing
-    // to reach each one. The first two are centered (so the very first
-    // grapple is dead simple), then platforms 3+ stagger ±110 px so the
-    // tutorial's "swing left and right" lesson is encoded in the layout
-    // itself — you can't just climb straight up.
+    // Slingshot pegs are small discrete dots, not horizontal bars. The very
+    // first peg sits directly above the spawn point so the player drifts
+    // upward straight onto it; subsequent pegs zig-zag left/right so the
+    // player has to aim their slings, not just hold a single direction.
     const easy = this.config.easyStart === true;
     const count = easy ? 8 : 6;
-    const width = easy ? 130 : 200;
-    const gap = easy ? 160 : 180;
+    const gap = easy ? 150 : 170;
+    const size = 30;
+    let prevCenterX = 0;
+    let prevY = this.config.startY;
     for (let i = 0; i < count; i++) {
-      const y = this.config.startY - 140 - i * gap;
+      const y = this.config.startY - 150 - i * gap;
       let centerX = 0;
-      if (easy) {
-        // i=0,1 stay centered; from i=2 onward alternate ±110 px.
-        if (i >= 2) centerX = i % 2 === 0 ? -110 : 110;
-      } else {
-        centerX = (this.rng.next() - 0.5) * 160;
-      }
+      if (i >= 2) centerX = i % 2 === 0 ? -90 : 90;
+      const kind: ObstacleKind = i > 0 && i % 3 === 0 ? 'energy' : 'platform';
       this.obstacles.push(
         createObstacle({
-          x: centerX - width / 2,
+          x: centerX - size / 2,
           y,
-          width,
-          height: 22,
-          kind: 'platform',
+          width: size,
+          height: size,
+          kind,
         }),
       );
+      if (i > 0) {
+        const sparkCount = easy ? 2 : 1;
+        for (let s = 1; s <= sparkCount; s++) {
+          const t = s / (sparkCount + 1);
+          const sx = prevCenterX + (centerX - prevCenterX) * t;
+          const sy = prevY + (y - prevY) * t - 8;
+          this.obstacles.push(
+            createObstacle({
+              x: sx - 8,
+              y: sy,
+              width: 16,
+              height: 16,
+              kind: 'spark',
+            }),
+          );
+        }
+      }
+      prevCenterX = centerX;
+      prevY = y;
       this.highestSpawnY = y;
     }
   }
@@ -203,6 +230,84 @@ export class World {
     }
   }
 
+  private spawnMomentumLane(y: number, half: number, earlyGame: boolean): boolean {
+    const openingBurst = this.groupsSpawned >= 3 && this.groupsSpawned <= 14;
+    const recurringBurst = this.groupsSpawned > 14 && this.groupsSpawned % 7 === 0;
+    const chance = openingBurst ? 0.52 : recurringBurst ? 0.26 : 0;
+    if (chance === 0 || this.rng.next() >= chance) return false;
+
+    const pegCount = openingBurst ? 3 : 4;
+    const direction = this.rng.next() < 0.5 ? -1 : 1;
+    const stepX = openingBurst ? 92 + this.rng.next() * 20 : 104 + this.rng.next() * 28;
+    const stepY = openingBurst ? 74 + this.rng.next() * 18 : 88 + this.rng.next() * 24;
+    const anchorX = clamp(
+      this.pathX - direction * stepX * ((pegCount - 1) / 2),
+      -half + 150,
+      half - 150,
+    );
+
+    const pegs: Array<{ x: number; y: number; size: number; kind: ObstacleKind }> = [];
+    for (let i = 0; i < pegCount; i++) {
+      const kind: ObstacleKind =
+        i === pegCount - 1 || (openingBurst && i === 1) ? 'energy' : 'platform';
+      const size = kind === 'energy' ? 34 + this.rng.next() * 6 : 27 + this.rng.next() * 5;
+      pegs.push({
+        x: clamp(anchorX + direction * i * stepX, -half + 34, half - 34),
+        y: y - i * stepY,
+        size,
+        kind,
+      });
+    }
+
+    for (const peg of pegs) {
+      this.obstacles.push(
+        createObstacle({
+          x: peg.x - peg.size / 2,
+          y: peg.y,
+          width: peg.size,
+          height: peg.size,
+          kind: peg.kind,
+        }),
+      );
+    }
+
+    for (let i = 0; i < pegs.length - 1; i++) {
+      const from = pegs[i]!;
+      const to = pegs[i + 1]!;
+      const sparkCount = openingBurst ? 2 : 3;
+      for (let s = 1; s <= sparkCount; s++) {
+        const t = s / (sparkCount + 1);
+        const sx = from.x + (to.x - from.x) * t + (this.rng.next() - 0.5) * 14;
+        const sy = from.y + (to.y - from.y) * t - 6 + (this.rng.next() - 0.5) * 12;
+        this.obstacles.push(
+          createObstacle({
+            x: clamp(sx, -half + 14, half - 14) - 8,
+            y: sy,
+            width: 16,
+            height: 16,
+            kind: 'spark',
+          }),
+        );
+      }
+    }
+
+    if (earlyGame && this.rng.next() < 0.45) {
+      const topPeg = pegs[pegs.length - 1]!;
+      const kind: PickupKind = this.rng.next() < 0.6 ? 'magnet-pickup' : 'shield-pickup';
+      this.obstacles.push(
+        createObstacle({
+          x: clamp(topPeg.x, -half + 20, half - 20) - 14,
+          y: topPeg.y - 70,
+          width: 28,
+          height: 28,
+          kind,
+        }),
+      );
+    }
+
+    return true;
+  }
+
   private spawnGroup(y: number): void {
     this.groupsSpawned += 1;
     // First ~25 procedural groups of an easy-start run are restricted to
@@ -212,44 +317,48 @@ export class World {
     // 25 groups covers the full tutorial flow (player reaches ~120m) plus
     // a generous post-tutorial buffer.
     const safeBand = this.config.easyStart === true && this.groupsSpawned <= 25;
+    const earlyGame = this.groupsSpawned <= 16;
     const roll = this.rng.next();
     const half = this.config.worldWidth / 2;
     // Path snake — bias new platforms toward a wandering centerline.
     // Slightly tighter wandering during the safe band so platforms stay
     // close to the player's expected vertical channel.
-    const snake = safeBand ? 140 : 220;
+    const snake = safeBand ? 140 : earlyGame ? 170 : 220;
     this.pathX += (this.rng.next() - 0.5) * snake;
     this.pathX = clamp(this.pathX, -half + 80, half - 80);
 
-    if (roll < 0.62) {
-      // Standard platform row, 1-2 platforms with a gap.
-      const count = this.rng.next() < 0.4 ? 2 : 1;
+    if (!safeBand && this.spawnMomentumLane(y, half, earlyGame)) return;
+
+    // Slingshot world: each spawn slot drops a small peg (sometimes a
+    // hazard or kicker). Pegs are 24–34 px squares that the renderer draws
+    // as glowing circular dots — no wide horizontal bars.
+    if (roll < 0.58) {
+      // Standard peg row: 1–3 small pegs offset horizontally around pathX.
+      const count = safeBand
+        ? 1
+        : earlyGame
+          ? (this.rng.next() < 0.65 ? 2 : 3)
+          : (this.rng.next() < 0.5 ? 2 : this.rng.next() < 0.7 ? 1 : 3);
+      const spacing = earlyGame ? 120 + this.rng.next() * 55 : 150 + this.rng.next() * 80;
+      const baseOffset = -((count - 1) / 2) * spacing;
       for (let i = 0; i < count; i++) {
-        // Safe-band platforms are NARROWER (90–140) than normal (100–220).
-        // A slimmer platform body gives the swing arc more room to pass
-        // without colliding — wider platforms aren't easier, they're
-        // harder, because they block the rope's lateral travel.
-        const width = safeBand
-          ? 90 + this.rng.next() * 50
-          : 100 + this.rng.next() * 120;
-        const x = this.pathX + (count === 1 ? -width / 2 : (i === 0 ? -180 : 60));
-        // Suppress unstable platforms during the safe band — they crumble
-        // out from under a new player and feel like an unfair death.
+        const size = 26 + this.rng.next() * 8;
+        const x = this.pathX + baseOffset + i * spacing;
         const kind: ObstacleKind =
-          !safeBand && this.rng.next() < 0.18 ? 'unstable' : 'platform';
+          !safeBand && this.rng.next() < 0.15 ? 'unstable' : 'platform';
         this.obstacles.push(
           createObstacle({
-            x: clamp(x, -half + 20, half - width - 20),
+            x: clamp(x, -half + 30, half - 30) - size / 2,
             y,
-            width,
-            height: 18,
+            width: size,
+            height: size,
             kind,
           }),
         );
       }
-    } else if (roll < 0.78) {
-      // Energy node — best anchor.
-      const size = 30 + this.rng.next() * 14;
+    } else if (roll < 0.7) {
+      // Energy peg — the prime anchor, larger and brighter.
+      const size = 32 + this.rng.next() * 10;
       this.obstacles.push(
         createObstacle({
           x: this.pathX - size / 2,
@@ -259,10 +368,52 @@ export class World {
           kind: 'energy',
         }),
       );
-    } else if (roll < 0.88) {
-      // Bouncy panel. Trimmed during the safe band so it doesn't block
-      // a beginner's swing trajectory mid-arc.
-      const width = safeBand ? 70 + this.rng.next() * 30 : 90 + this.rng.next() * 60;
+      // Often paired with a small companion peg off to one side so the
+      // player has a choice.
+      if (this.rng.next() < (earlyGame ? 0.85 : 0.5)) {
+        const compSize = 26;
+        const side = this.rng.next() < 0.5 ? -1 : 1;
+        const cx = this.pathX + side * (earlyGame ? 110 + this.rng.next() * 60 : 140 + this.rng.next() * 80);
+        this.obstacles.push(
+          createObstacle({
+            x: clamp(cx, -half + 30, half - 30) - compSize / 2,
+            y: y - 30 + this.rng.next() * 60,
+            width: compSize,
+            height: compSize,
+            kind: 'platform',
+          }),
+        );
+      }
+    } else if (roll < 0.78 && !safeBand && !earlyGame) {
+      // Timed peg — active only during the bright half of its cycle.
+      const size = 26 + this.rng.next() * 8;
+      this.obstacles.push(
+        createObstacle({
+          x: this.pathX - size / 2,
+          y,
+          width: size,
+          height: size,
+          kind: 'timed',
+        }),
+      );
+      // Pair it with a regular peg as a backup line so the player isn't
+      // stranded if they mistime the cycle.
+      const compSize = 26;
+      const side = this.rng.next() < 0.5 ? -1 : 1;
+      const cx = this.pathX + side * (150 + this.rng.next() * 70);
+      this.obstacles.push(
+        createObstacle({
+          x: clamp(cx, -half + 30, half - 30) - compSize / 2,
+          y: y + 20,
+          width: compSize,
+          height: compSize,
+          kind: 'platform',
+        }),
+      );
+    } else if (roll < 0.86) {
+      // Bouncy kicker panel — these stay as horizontal bars; they're
+      // surfaces you ricochet off, not slingshot targets.
+      const width = safeBand ? 60 + this.rng.next() * 30 : 80 + this.rng.next() * 50;
       this.obstacles.push(
         createObstacle({
           x: this.pathX - width / 2,
@@ -272,25 +423,49 @@ export class World {
           kind: 'bouncy',
         }),
       );
+      // Always pair a bouncy panel with a peg above so the kick has a target.
+      const pegSize = 28;
+      this.obstacles.push(
+        createObstacle({
+          x: this.pathX - pegSize / 2,
+          y: y - 130,
+          width: pegSize,
+          height: pegSize,
+          kind: 'platform',
+        }),
+      );
     } else if (roll < 0.95) {
-      // Spike hazard (no grapple) — replaced with an extra platform during
-      // the safe band so first-run players don't see a lethal obstacle
-      // before they've learned to grapple.
-      if (safeBand) {
-        const width = 120 + this.rng.next() * 80;
+      // Spike hazard — placed off to the side of the path so it gates a
+      // bad-aim launch instead of being unavoidable.
+      if (safeBand || earlyGame) {
+        const size = earlyGame && this.rng.next() < 0.4 ? 34 : 28;
+        const kind: ObstacleKind = size > 30 ? 'energy' : 'platform';
         this.obstacles.push(
           createObstacle({
-            x: clamp(this.pathX - width / 2, -half + 20, half - width - 20),
+            x: this.pathX - size / 2,
             y,
-            width,
-            height: 18,
-            kind: 'platform',
+            width: size,
+            height: size,
+            kind,
           }),
         );
+        if (earlyGame && this.rng.next() < 0.55) {
+          const wingSize = 26;
+          const side = this.rng.next() < 0.5 ? -1 : 1;
+          this.obstacles.push(
+            createObstacle({
+              x: clamp(this.pathX + side * (110 + this.rng.next() * 50), -half + 30, half - 30) - wingSize / 2,
+              y: y - 24,
+              width: wingSize,
+              height: wingSize,
+              kind: 'platform',
+            }),
+          );
+        }
       } else {
-        const width = 60 + this.rng.next() * 60;
+        const width = 60 + this.rng.next() * 50;
         const sideRoll = this.rng.next();
-        const x = sideRoll < 0.5 ? this.pathX - 260 : this.pathX + 160;
+        const x = sideRoll < 0.5 ? this.pathX - 230 : this.pathX + 130;
         this.obstacles.push(
           createObstacle({
             x: clamp(x, -half + 20, half - width - 20),
@@ -300,43 +475,55 @@ export class World {
             kind: 'spike',
           }),
         );
+        // Add a peg in the safe lane so the player still has somewhere to go.
+        const pegSize = 28;
+        const safeX = sideRoll < 0.5 ? this.pathX + 90 : this.pathX - 90;
+        this.obstacles.push(
+          createObstacle({
+            x: clamp(safeX, -half + 30, half - 30) - pegSize / 2,
+            y,
+            width: pegSize,
+            height: pegSize,
+            kind: 'platform',
+          }),
+        );
       }
     } else {
-      // Drifting drone — slow horizontal oscillation. Safe band substitutes
-      // a static energy node so the player still gets a worthy anchor.
-      if (safeBand) {
-        const size = 32 + this.rng.next() * 12;
+      // Drifting drone peg — moves horizontally. Safe band substitutes a
+      // static peg so the player isn't chasing a moving target while learning.
+      if (safeBand || earlyGame) {
+        const size = earlyGame && this.rng.next() < 0.55 ? 34 : 30;
+        const kind: ObstacleKind = size > 30 ? 'energy' : 'platform';
         this.obstacles.push(
           createObstacle({
             x: this.pathX - size / 2,
             y,
             width: size,
             height: size,
-            kind: 'energy',
+            kind,
           }),
         );
       } else {
-        const width = 36;
-        const height = 24;
+        const size = 30;
         const obs = createObstacle({
-          x: this.pathX - width / 2,
+          x: this.pathX - size / 2,
           y,
-          width,
-          height,
+          width: size,
+          height: size,
           kind: 'drone',
         });
-        obs.amp = 120 + this.rng.next() * 80;
+        obs.amp = 100 + this.rng.next() * 80;
         obs.driftAngle = this.rng.next() * Math.PI * 2;
-        obs.driftSpeed = 0.4 + this.rng.next() * 0.6;
+        obs.driftSpeed = 0.4 + this.rng.next() * 0.5;
         this.obstacles.push(obs);
       }
     }
 
     // Mid-air sparks scattered between platforms (high frequency, immediate reward loop).
-    if (this.rng.next() < 0.55) {
-      const sparkCount = 1 + (this.rng.next() < 0.3 ? 1 : 0);
+    if (this.rng.next() < (earlyGame ? 0.72 : 0.55)) {
+      const sparkCount = 1 + (this.rng.next() < (earlyGame ? 0.55 : 0.3) ? 1 : 0);
       for (let i = 0; i < sparkCount; i++) {
-        const sx = this.pathX + (this.rng.next() - 0.5) * 320;
+        const sx = this.pathX + (this.rng.next() - 0.5) * (earlyGame ? 240 : 320);
         const sy = y - 40 - this.rng.next() * 80;
         this.obstacles.push(
           createObstacle({
@@ -350,7 +537,7 @@ export class World {
       }
     }
     // Rarer powerup drops — pickable circles that grant a temporary effect.
-    if (this.rng.next() < 0.06) {
+    if (this.rng.next() < (earlyGame ? 0.1 : 0.06)) {
       const r = this.rng.next();
       const kind: PickupKind = r < 0.4 ? 'shield-pickup' : r < 0.75 ? 'slow-pickup' : 'magnet-pickup';
       this.obstacles.push(
@@ -367,6 +554,7 @@ export class World {
 
   /** Advance time-dependent obstacle behavior: drone drift, unstable countdown. */
   update(dt: number): void {
+    this.frames += dt;
     for (let i = this.obstacles.length - 1; i >= 0; i--) {
       const o = this.obstacles[i]!;
       o.lastX = o.x;
@@ -379,6 +567,11 @@ export class World {
         o.driftAngle += o.driftSpeed * dt * 0.02;
         const baseX = o.x - Math.sin(o.driftAngle - o.driftSpeed * dt * 0.02) * o.amp;
         o.x = baseX + Math.sin(o.driftAngle) * o.amp;
+      }
+      if (o.kind === 'timed') {
+        // Flip grappleable based on the cycle. The renderer keys off this to
+        // dim the peg when it's inactive.
+        o.grappleable = isTimedPegActive(o, this.frames);
       }
       if (o.unstableTriggered) {
         o.unstableTimer += dt;

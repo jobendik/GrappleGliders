@@ -48,19 +48,19 @@ const isTouchDevice = (): boolean =>
 const TOUCH_STEPS: TutorialStep[] = [
   {
     message:
-      'Fly close to a glowing platform — you\'ll automatically latch on and start spinning! No lava yet, take your time.',
+      'Drift toward a glowing peg — you\'ll latch on automatically and start swinging. Take your time.',
     require: 'hookConnect',
     fallbackMs: null,
   },
   {
     message:
-      'TAP anywhere to release at the right moment and fly upward! Time your tap when you\'re heading UP.',
+      'TAP the screen to release! You\'ll launch upward with your swing momentum — time it at the top of the arc for extra height.',
     require: 'hookRelease',
     fallbackMs: null,
   },
   {
     message:
-      'GOAL: Climb as high as you can! Latch on → spin → tap to release, repeat. Reach 120m to graduate.',
+      'Climb peg by peg! Miss the next anchor and you\'ll fall — but the game catches you and resets to the last peg. Reach 120m to finish the tutorial.',
     require: 'altitude',
     threshold: 120,
     fallbackMs: null,
@@ -70,19 +70,19 @@ const TOUCH_STEPS: TutorialStep[] = [
 const DESKTOP_STEPS: TutorialStep[] = [
   {
     message:
-      'Fly close to a glowing platform — you\'ll automatically latch on and start spinning! No lava yet, take your time.',
+      'Drift toward a glowing peg — you\'ll latch on automatically and start swinging. Take your time.',
     require: 'hookConnect',
     fallbackMs: null,
   },
   {
     message:
-      'CLICK (or press Space) to release at the right moment and fling upward! Release when you\'re heading UP.',
+      'CLICK to release! You\'ll launch upward with your swing momentum — time it at the top of the arc for extra height.',
     require: 'hookRelease',
     fallbackMs: null,
   },
   {
     message:
-      'GOAL: Climb as high as you can! Latch on → spin → release, repeat. Reach 120m to graduate.',
+      'Climb peg by peg! Miss the next anchor and you\'ll fall — but the game catches you and resets to the last peg. Reach 120m to finish the tutorial.',
     require: 'altitude',
     threshold: 120,
     fallbackMs: null,

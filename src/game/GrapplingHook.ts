@@ -127,6 +127,55 @@ export class GrapplingHook {
   }
 
   /**
+   * Slingshot snap: latch the player onto the nearest peg within `range` and
+   * leave them "loaded" — Player.ts is responsible for locking position and
+   * sampling the drag-and-release input. No rope length is set; the player
+   * sits at the peg until they launch.
+   */
+  tryAutoSling(
+    playerPos: Vec2,
+    obstacles: ReadonlyArray<Obstacle>,
+    range: number,
+  ): HookConnectEvent | null {
+    if (this.state !== 'idle') return null;
+    let bestDist = range;
+    let bestObs: Obstacle | null = null;
+    let bestCx = 0;
+    let bestCy = 0;
+    for (const obs of obstacles) {
+      if (!obs.grappleable) continue;
+      if (obs.bouncy) continue; // bouncy panels are kickers, not snap targets
+      if (obs.id === this.lastAttachedId && this.reattachCooldown > 0) continue;
+      // Distance to the *closest point on the rect*, not the center. This
+      // lets a wide platform snap from anywhere along its surface instead
+      // of only when the player's center lines up with the rect's center.
+      const cpx = Math.max(obs.x, Math.min(playerPos.x, obs.x + obs.width));
+      const cpy = Math.max(obs.y, Math.min(playerPos.y, obs.y + obs.height));
+      const dist = Math.hypot(cpx - playerPos.x, cpy - playerPos.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestObs = obs;
+        bestCx = obs.x + obs.width / 2;
+        bestCy = obs.y + obs.height / 2;
+      }
+    }
+    if (!bestObs) return null;
+    this.position.set(bestCx, bestCy);
+    this.state = 'attached';
+    this.attached = bestObs;
+    // Pendulum mode: fixed rope length so the character hangs from the peg
+    // at a consistent visual distance and the swing arc is predictable.
+    this.ropeLength = PHYSICS.pendulumRopeLength;
+    this.perfectAnchor = bestDist < 18;
+    return {
+      obstacle: bestObs,
+      position: this.position.clone(),
+      distance: bestDist,
+      perfectAnchor: this.perfectAnchor,
+    };
+  }
+
+  /**
    * Spin-and-release: instantly attach to the nearest grappleable obstacle
    * within `range` pixels. Returns the connect event on success, null otherwise.
    */

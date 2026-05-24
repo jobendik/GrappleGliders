@@ -181,6 +181,20 @@ body::after {
 
 .row strong { color: var(--white); font-weight: 700; font-variant-numeric: tabular-nums; }
 
+.hud-saves-row {
+  margin-top: 8px;
+  color: var(--cyan);
+}
+
+.hud-saves-row.danger {
+  color: var(--red);
+}
+
+.hud-saves-row.danger strong {
+  color: var(--red);
+  text-shadow: 0 0 10px rgba(255, 37, 94, 0.6);
+}
+
 .bar {
   position: relative;
   height: 8px;
@@ -2520,6 +2534,18 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 
+.gameover-nudge {
+  max-width: 48ch;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-family: var(--ui);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--white);
+  background: color-mix(in srgb, var(--theme-accent) 16%, rgba(0, 0, 0, 0.3));
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 28%, transparent);
+}
+
 .gameover-actions {
   display: flex;
   flex-wrap: wrap;
@@ -2535,6 +2561,31 @@ kbd {
   font-size: 18px;
   letter-spacing: 0.22em;
   border-radius: 999px;
+}
+
+.gameover-action-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.gameover-action-label,
+.ad-label {
+  font-size: 14px;
+}
+
+.gameover-action-sub,
+.ad-sub {
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  opacity: 0.82;
+}
+
+.gameover-revive-cta {
+  min-width: 210px;
+  justify-content: center;
 }
 
 /* Rewarded-ad button — yellow accent so the player understands it's an ad,
@@ -2583,16 +2634,8 @@ kbd {
   font-size: 10px;
 }
 
-.ad-btn .ad-label {
-  font-size: 14px;
-}
-
-.ad-btn .ad-sub {
-  font-style: normal;
-  font-size: 10px;
-  letter-spacing: 0.16em;
-  opacity: 0.8;
-  margin-left: 4px;
+.ad-btn .gameover-action-stack {
+  align-items: flex-start;
 }
 
 .gameover-tertiary {
@@ -2656,5 +2699,6 @@ kbd {
   .gameover-hero { min-width: 0; padding: 12px 18px 14px; }
   .gameover-hero-value { font-size: clamp(32px, 9vw, 44px); }
   .ad-btn { padding: 10px 14px; }
+  .gameover-action-sub,
   .ad-btn .ad-sub { display: none; }
 }

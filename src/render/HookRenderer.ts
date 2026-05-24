@@ -1,6 +1,6 @@
 import type { GrapplingHook } from '../game/GrapplingHook';
 import type { HookDef } from '../content/hooks';
-import { Vec2 } from '../game/Physics';
+import { PHYSICS, Vec2 } from '../game/Physics';
 import { withAlpha } from '../utils/color';
 
 export class HookRenderer {
@@ -16,6 +16,7 @@ export class HookRenderer {
     def: HookDef,
     time: number,
     lowQuality: boolean,
+    slingMode: boolean = false,
   ): void {
     if (hook.state === 'idle') {
       this.wasAttached = false;
@@ -48,23 +49,32 @@ export class HookRenderer {
     ctx.save();
     ctx.lineCap = 'round';
 
-    switch (def.rope) {
-      case 'cable':
-      case 'chain':
-      case 'plasma':
-      case 'thread':
-      case 'silk':
-        this.drawCable(ctx, start, end, def, tension, time, lowQuality);
-        break;
-      case 'laser':
-        this.drawLaser(ctx, start, end, def, time, tension, lowQuality);
-        break;
-      case 'vine':
-        this.drawVine(ctx, start, end, def, time, tension, lowQuality);
-        break;
-      case 'lightning':
-        this.drawLightning(ctx, start, end, def, time, tension, lowQuality);
-        break;
+    // Pendulum-swing mode: draw two parallel strands forming a V from the
+    // peg down to two offset attach points near the player. Matches the
+    // Talking Tom Go Up look.
+    const useV = slingMode && hook.state === 'attached';
+
+    if (useV) {
+      this.drawSlingRopes(ctx, start, end, def, tension, time, lowQuality);
+    } else {
+      switch (def.rope) {
+        case 'cable':
+        case 'chain':
+        case 'plasma':
+        case 'thread':
+        case 'silk':
+          this.drawCable(ctx, start, end, def, tension, time, lowQuality);
+          break;
+        case 'laser':
+          this.drawLaser(ctx, start, end, def, time, tension, lowQuality);
+          break;
+        case 'vine':
+          this.drawVine(ctx, start, end, def, time, tension, lowQuality);
+          break;
+        case 'lightning':
+          this.drawLightning(ctx, start, end, def, time, tension, lowQuality);
+          break;
+      }
     }
 
     // Energy pulse — bright dot that travels along the rope from player to anchor.
@@ -187,6 +197,99 @@ export class HookRenderer {
   }
 
   /**
+   * Sling-mode aim overlay: rubber band stretched from the peg toward the
+   * pulled-back hang point, plus a fading dotted trajectory preview that
+   * shows the launch arc the player will follow on release.
+   *
+   * @param pegPos  Anchor pin world position
+   * @param hangPos Where the character hangs (peg + sling hang offset)
+   * @param drag    Pull vector in world px (drag direction; launch is opposite)
+   * @param color   Theme accent for the band/preview
+   * @param time    Frame counter for animation
+   */
+  drawSlingAim(
+    ctx: CanvasRenderingContext2D,
+    pegPos: Vec2,
+    hangPos: Vec2,
+    drag: Vec2,
+    color: string,
+    time: number,
+  ): void {
+    const dragLen = Math.hypot(drag.x, drag.y);
+    if (dragLen < PHYSICS.slingDeadZonePx) return;
+
+    const power = Math.min(1, dragLen / PHYSICS.slingMaxDragPx);
+    const impulse =
+      PHYSICS.slingMinImpulse +
+      (PHYSICS.slingMaxImpulse - PHYSICS.slingMinImpulse) * power;
+    const dirX = -drag.x / dragLen;
+    const dirY = -drag.y / dragLen;
+
+    // Visually displaced hang position — the character looks like it's been
+    // pulled back along the drag direction. Capped so the rubber band can't
+    // stretch infinitely on the screen at full power.
+    const pullCap = Math.min(dragLen, PHYSICS.slingMaxDragPx) * 0.35;
+    const pulledX = hangPos.x + (drag.x / dragLen) * pullCap;
+    const pulledY = hangPos.y + (drag.y / dragLen) * pullCap;
+
+    ctx.save();
+
+    // Rubber band — two strands from either side of the peg meeting at the
+    // pulled-back point. Width and brightness scale with power.
+    const bandColor = withAlpha(color, 0.55 + power * 0.35);
+    ctx.strokeStyle = bandColor;
+    ctx.lineWidth = 2 + power * 2.5;
+    ctx.lineCap = 'round';
+    const perpX = -dirY * 6;
+    const perpY = dirX * 6;
+    ctx.beginPath();
+    ctx.moveTo(pegPos.x + perpX, pegPos.y + perpY);
+    ctx.lineTo(pulledX, pulledY);
+    ctx.lineTo(pegPos.x - perpX, pegPos.y - perpY);
+    ctx.stroke();
+
+    // Trajectory preview — simulate the launch arc using the same physics
+    // as Player.updateSling. Plot fading dots at fixed intervals.
+    const steps = 22;
+    const dt = 2.2; // larger step = sparser dots
+    let vx = dirX * impulse;
+    let vy = dirY * impulse;
+    let px = hangPos.x;
+    let py = hangPos.y;
+    ctx.fillStyle = withAlpha('#ffffff', 0.9);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 8;
+    for (let i = 0; i < steps; i++) {
+      vy += PHYSICS.gravity * dt;
+      vx *= Math.pow(PHYSICS.airDrag, dt);
+      vy *= Math.pow(PHYSICS.airDrag, dt);
+      px += vx * dt;
+      py += vy * dt;
+      const alpha = 1 - i / steps;
+      const r = 3.6 * alpha + 1.4;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(px, py, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
+
+    // Power readout: faint pulse ring around the peg whose brightness
+    // tracks the current power level.
+    const pulse = 0.6 + Math.sin(time * 0.25) * 0.4;
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = withAlpha(color, 0.4 * power * pulse);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(pegPos.x, pegPos.y, 18 + power * 14, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+
+    ctx.restore();
+  }
+
+  /**
    * Draws a faint dashed circle showing the player's current orbital path
    * while attached. Called by Game.ts for the human player only.
    */
@@ -211,6 +314,92 @@ export class HookRenderer {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.restore();
+  }
+
+  /**
+   * Pendulum-swing rope rendering. Draws two parallel strands from the peg
+   * (end) down to two perpendicular-offset anchor points near the player
+   * (start). Forms the V/triangle silhouette of Talking Tom Go Up.
+   *
+   * Visually treats the two ropes as plain cables regardless of `def.rope`,
+   * since exotic hook styles (laser, lightning) read poorly as twin strands.
+   */
+  private drawSlingRopes(
+    ctx: CanvasRenderingContext2D,
+    start: Vec2,
+    end: Vec2,
+    def: HookDef,
+    tension: number,
+    time: number,
+    lowQuality: boolean,
+  ): void {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const dist = Math.hypot(dx, dy) || 1e-3;
+    // Unit vector from player toward peg.
+    const ux = dx / dist;
+    const uy = dy / dist;
+    // Perpendicular (rotated 90°). Defines the "shoulder" offset.
+    const perpX = -uy;
+    const perpY = ux;
+    // Wider at the player end, meeting at a single point at the peg.
+    const shoulderOffset = 7;
+    const leftSx = start.x + perpX * shoulderOffset;
+    const leftSy = start.y + perpY * shoulderOffset;
+    const rightSx = start.x - perpX * shoulderOffset;
+    const rightSy = start.y - perpY * shoulderOffset;
+
+    const lineWidth = Math.max(1.6, def.width * 0.7);
+
+    // Outer glow halo (cheap additive pass to make the ropes pop).
+    if (!lowQuality) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.strokeStyle = withAlpha(def.color, 0.25 + tension * 0.25);
+      ctx.lineWidth = lineWidth + 3;
+      ctx.beginPath();
+      ctx.moveTo(leftSx, leftSy);
+      ctx.lineTo(end.x, end.y);
+      ctx.moveTo(rightSx, rightSy);
+      ctx.lineTo(end.x, end.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Core strands.
+    const coreColor = tension > 0.4
+      ? `rgba(255,${230 - tension * 80},255,1)`
+      : def.color;
+    ctx.strokeStyle = coreColor;
+    ctx.lineWidth = lineWidth;
+    if (!lowQuality) {
+      ctx.shadowColor = def.color;
+      ctx.shadowBlur = 5 + tension * 5;
+    }
+    ctx.beginPath();
+    ctx.moveTo(leftSx, leftSy);
+    ctx.lineTo(end.x, end.y);
+    ctx.moveTo(rightSx, rightSy);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Tiny shimmer dots traveling along each strand (skip in low-quality).
+    if (!lowQuality) {
+      const t = (time * 0.02) % 1;
+      const lx = leftSx + (end.x - leftSx) * t;
+      const ly = leftSy + (end.y - leftSy) * t;
+      const rx = rightSx + (end.x - rightSx) * t;
+      const ry = rightSy + (end.y - rightSy) * t;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillStyle = withAlpha('#ffffff', 0.85);
+      ctx.beginPath();
+      ctx.arc(lx, ly, 1.6, 0, Math.PI * 2);
+      ctx.arc(rx, ry, 1.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
   }
 
   private drawCable(

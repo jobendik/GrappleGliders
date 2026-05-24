@@ -17,6 +17,12 @@ export interface RacePodiumEntry {
 export interface GameOverContext {
   mode: GameMode;
   cause: string;
+  eyebrow?: string;
+  nudge?: string;
+  retryLabel?: string;
+  retrySub?: string;
+  reviveLabel?: string;
+  reviveSub?: string;
   score: number;
   altitude: number;
   peakCombo: number;
@@ -32,6 +38,8 @@ export interface GameOverContext {
   canRevive: boolean;
   /** Whether the CrazyGames SDK is available — gates rewarded-ad buttons. */
   adsAvailable: boolean;
+  /** Whether the 2x Sparks rewarded-ad offer is still available. */
+  canWatch2xAd?: boolean;
   /** Current daily-login streak in days. */
   dailyStreak: number;
   /** Cheapest cosmetic the player is progressing toward. */
@@ -58,6 +66,27 @@ interface Hero {
   isPB: boolean;
 }
 
+interface GameOverPresentation {
+  eyebrow: string;
+  retryLabel: string;
+  retrySub: string;
+  reviveLabel: string;
+  reviveSub: string;
+  nudge: string;
+}
+
+export const resolveGameOverPresentation = (
+  ctx: GameOverContext,
+  showRevive: boolean,
+): GameOverPresentation => ({
+  eyebrow: ctx.eyebrow ?? (ctx.newBestAltitude || ctx.newBestScore || ctx.newBestTime ? 'New Best' : 'Run Ended'),
+  retryLabel: ctx.retryLabel ?? (showRevive ? 'Fresh Run' : 'Retry'),
+  retrySub: ctx.retrySub ?? (showRevive ? 'Restart from the ground' : 'Back in instantly'),
+  reviveLabel: ctx.reviveLabel ?? 'Keep This Run',
+  reviveSub: ctx.reviveSub ?? 'Watch ad to continue',
+  nudge: ctx.nudge ?? '',
+});
+
 export class GameOverScreen {
   private root: HTMLElement;
   private el: HTMLDivElement | null = null;
@@ -81,8 +110,9 @@ export class GameOverScreen {
     modal.className = 'modal gameover-v2';
 
     const showRevive = ctx.canRevive && ctx.adsAvailable;
-    const show2x = ctx.adsAvailable;
+    const show2x = ctx.adsAvailable && ctx.canWatch2xAd !== false;
     const showClip = ctx.replayAvailable === true && typeof cb.onSaveClip === 'function';
+    const presentation = resolveGameOverPresentation(ctx, showRevive);
     const streakNudge = this.streakNudge(ctx.dailyStreak);
     const podiumHtml = ctx.racePodium ? this.renderPodium(ctx.racePodium) : '';
     const trickHtml = ctx.trickSummary ? this.renderTrickSummary(ctx.trickSummary) : '';
@@ -96,7 +126,7 @@ export class GameOverScreen {
 
     modal.innerHTML = `
       <div class="modal-content">
-        <span class="gameover-eyebrow">Run Ended</span>
+        <span class="gameover-eyebrow">${this.escapeHtml(presentation.eyebrow)}</span>
         <p class="gameover-cause">${this.escapeHtml(ctx.cause)}</p>
 
         ${podiumHtml}
@@ -107,10 +137,11 @@ export class GameOverScreen {
         ${unlockHtml}
         ${trickHtml}
         ${streakNudge}
+        ${presentation.nudge ? `<div class="gameover-nudge">${this.escapeHtml(presentation.nudge)}</div>` : ''}
 
         <div class="gameover-actions">
-          <button class="primary large gameover-retry" data-el="retry">RETRY</button>
-          ${showRevive ? '<button class="ad-btn" data-el="revive"><span class="ad-icon">▶</span><span class="ad-label">Revive</span><em class="ad-sub">Watch ad</em></button>' : ''}
+          <button class="primary large gameover-retry" data-el="retry"><span class="gameover-action-stack"><span class="gameover-action-label">${this.escapeHtml(presentation.retryLabel)}</span><em class="gameover-action-sub">${this.escapeHtml(presentation.retrySub)}</em></span></button>
+          ${showRevive ? `<button class="ad-btn gameover-revive-cta" data-el="revive"><span class="ad-icon">▶</span><span class="gameover-action-stack"><span class="ad-label">${this.escapeHtml(presentation.reviveLabel)}</span><em class="ad-sub">${this.escapeHtml(presentation.reviveSub)}</em></span></button>` : ''}
         </div>
 
         <div class="gameover-tertiary">
